@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r4"
+version="r5"
 debug=0
 vlan_tagged_port="t"
 
@@ -14,17 +14,17 @@ switch_ifname="eth0"
 switch_name="switch0"
 switch_port_min=0
 switch_port_max=0
-switch_port_list=-1
+switch_port_list=""
 switch_port_num=0
 switch_port_cpu=-1
 switch_port_wan=-1
-switch_port_lan=-1
+switch_port_lan=""
 voip_enabled=0
 iptv_enabled=0
 iptv_ipaddr=""
 iptv_netmask=""
 iptv_gateway=""
-iptv_has_alias=-1
+iptv_has_alias=0
 tvlan_ipaddr=""
 tvlan_netmask=""
 
@@ -44,34 +44,38 @@ space() {
 	print "---"
 }
 ip_check() {
-	local is_valid
-	is_valid=$(echo $1 | awk -F"\." ' $0 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $1 <=255 && $2 <= 255 && $3 <= 255 && $4 <= 255 ')
-	echo $is_valid
+	echo $1 | awk -F"\." ' $0 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $1 <=255 && $2 <= 255 && $3 <= 255 && $4 <= 255 '
 }
 read_check_ip() {
 	local ip=""
 	local valid=""
 
+	# Get valid IP
 	while [[ ${#valid} -eq 0 ]]
 	do
 		read ip
 		valid=$(ip_check "$ip")
 	done
 
+	# Return IP
 	echo $ip
 }
 read_check_yesno() {
 	local answer=""
 	local valid=0
 
+	# Get valid answer
 	while [[ $valid -eq 0 ]]
 	do
 		read answer
-		if [[ $answer == "y" || $answer == "n" ]]; then
-			valid=1
+		if [[ ${#answer} -gt 0 ]]; then
+			if [[ $answer == "y" || $answer == "n" ]]; then
+				valid=1
+			fi
 		fi
 	done
 
+	# Return answer
 	if [[ $answer == "y" ]]; then
 		echo 1
 	else
@@ -111,8 +115,8 @@ switch_detect() {
 	switch_port_cpu=$(echo $switch_help | sed "s/cpu @ /&\n/;s/.*\n//;s/), vlans/\n&/;s/\n.*//")
 	switch_port_num=$(echo $switch_help | sed "s/, ports: /&\n/;s/.*\n//;s/ (cpu @ /\n&/;s/\n.*//")
 
+	# Obtain port list
 	switch_port_max=$(($switch_port_num - 1))
-	switch_port_list=""
 	for i in $(seq $switch_port_min 1 $switch_port_max)
 	do
 		if [[ ${#switch_port_list} -eq 0 ]]; then
@@ -128,22 +132,16 @@ wan_port_ask() {
 	read switch_port_wan
 
 	# Check port
-	error=0
-	if [[ $switch_port_wan -lt $switch_port_min ]]; then
-		error=1
-	fi
-	if [[ $switch_port_wan -gt $switch_port_max ]]; then
-		error=1
+	if [[ $switch_port_wan -lt $switch_port_min || $switch_port_wan -gt $switch_port_max ]]; then
+		error "Invalid WAN port: valid range [$switch_port_list]"
+		wan_port_ask
 	fi
 	if [[ $switch_port_wan -eq $switch_port_cpu ]]; then
-		error=1
-	fi
-	if [[ $error -eq 1 ]]; then	
+		error "Invalid WAN port: matches CPU port"
 		wan_port_ask
 	fi
 
-	# Calculate lan ports
-	switch_port_lan=""
+	# Obtain lan ports
 	for i in $(seq $switch_port_min 1 $switch_port_max)
 	do
 		if [[ $i -eq $switch_port_cpu ]] || [[ $i -eq $switch_port_wan ]]; then
@@ -157,6 +155,17 @@ wan_port_ask() {
 		fi
 	done
 }
+enabled_configs_print() {
+	# Print configuration mode
+	local configs_enabled="WAN"
+	if [[ $voip_enabled -eq 1 ]]; then
+		configs_enabled="$configs_enabled + VOIP"
+	fi
+	if [[ $iptv_enabled -eq 1 ]]; then
+		configs_enabled="$configs_enabled + IPTV"
+	fi
+	print $configs_enabled
+}
 mode_ask() {
 	# Ask for VOIP
 	print "Enable VOIP? (y/n)"
@@ -165,6 +174,11 @@ mode_ask() {
 	# Ask for IPTV
 	print "Enable IPTV? (y/n)"
 	iptv_enabled=$(read_check_yesno)
+
+	# Print configs enabled
+	enabled_configs_print
+
+	space
 
 	# Ask for IPTV configuration
 	if [[ $iptv_enabled -eq 1 ]]; then
@@ -180,7 +194,7 @@ mode_ask() {
 				;;
 			*)
 				error "Unsupported IPTV IP address"
-				iptv_ask
+				mode_ask
 				;;
 		esac
 
@@ -220,6 +234,8 @@ set_bird4() {
 	echo -e "\texport none;" >> $1
 	echo -e "}" >> $1
 	echo -e "" >> $1
+
+	# VOIP RIPv2
 	if [[ $voip_enabled -eq 1 ]]; then
 		echo -e "filter voip_filter {" >> $1
 		echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
@@ -233,18 +249,10 @@ set_bird4() {
 		echo -e "" >> $1
 	fi
 
+	# IPTV RIPv2
 	if [[ $iptv_enabled -eq 1 ]]; then
 		echo -e "filter iptv_filter {" >> $1
-
-		case $iptv_ipaddr in
-			"10."*)
-				echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-				;;
-			"172."*)
-				echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
-				;;
-		esac
-
+		echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
 		echo -e "\telse reject;" >> $1
 		echo -e "}" >> $1
 		echo -e "protocol rip iptv {" >> $1
@@ -262,16 +270,8 @@ set_igmpproxy() {
 	echo -e "config phyint" >> $1
 	echo -e "option network eth0.2" >> $1
 	echo -e "option direction upstream" >> $1
-
-	case $iptv_ipaddr in
-		"10."*)
-			echo -e "list altnet 10.0.0.0/8" >> $1
-			;;
-		"172."*)
-			echo -e "list altnet 172.26.0.0/16" >> $1
-			;;
-	esac
-
+    echo -e "list altnet 172.26.0.0/16" >> $1
+	echo -e "list altnet 192.168.1.0/24" >> $1
 	echo -e "" >> $1
 	echo -e "config phyint" >> $1
 	echo -e "option network br-lan" >> $1
@@ -279,16 +279,19 @@ set_igmpproxy() {
 	echo -e "" >> $1
 }
 
-igmpproxy_workaround() {
+igmpproxy_workaround_enable() {
 	echo -e "# Put your custom commands here that should be executed once" > /etc/rc.local
 	echo -e "# the system init finished. By default this file does nothing." >> /etc/rc.local
 	echo -e "" >> /etc/rc.local
-
-	if [[ $iptv_enabled -eq 1 ]]; then
-		echo -e "sleep 5 && /etc/init.d/igmpproxy start &" >> /etc/rc.local
-		echo -e "" >> /etc/rc.local
-	fi
-
+	echo -e "sleep 5 && /etc/init.d/igmpproxy start &" >> /etc/rc.local
+	echo -e "" >> /etc/rc.local
+	echo -e "exit 0" >> /etc/rc.local
+	echo -e "" >> /etc/rc.local
+}
+igmpproxy_workaround_disable() {
+	echo -e "# Put your custom commands here that should be executed once" > /etc/rc.local
+	echo -e "# the system init finished. By default this file does nothing." >> /etc/rc.local
+	echo -e "" >> /etc/rc.local
 	echo -e "exit 0" >> /etc/rc.local
 	echo -e "" >> /etc/rc.local
 }
@@ -380,26 +383,28 @@ mode_firewall_cfg() {
 		uci set firewall.@zone[-1].output="ACCEPT" &> /dev/null
 		uci set firewall.@zone[-1].forward="REJECT" &> /dev/null
 		uci set firewall.@zone[-1].network="iptv" &> /dev/null
+		if [[ $iptv_has_alias -eq 0 ]]; then
+			uci set firewall.@zone[-1].masq="1" &> /dev/null
+		fi
 
 		uci add firewall forwarding &> /dev/null
 		uci set firewall.@forwarding[-1].src="lan" &> /dev/null
 		uci set firewall.@forwarding[-1].dest="iptv" &> /dev/null
+
 		uci add firewall forwarding &> /dev/null
 		uci set firewall.@forwarding[-1].src="iptv" &> /dev/null
 		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
 
-		case $iptv_ipaddr in
-			"10."*)
-				uci add firewall redirect &> /dev/null
-				uci set firewall.@redirect[-1].target="SNAT" &> /dev/null
-				uci set firewall.@redirect[-1].src="wan" &> /dev/null
-				uci set firewall.@redirect[-1].dest="iptv" &> /dev/null
-				uci set firewall.@redirect[-1].enabled="1" &> /dev/null
-				uci set firewall.@redirect[-1].name="iptv_menu" &> /dev/null
-				uci set firewall.@redirect[-1].proto="all" &> /dev/null
-				uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr" &> /dev/null
-				;;
-		esac
+		if [[ $iptv_has_alias -eq 0 ]]; then
+			uci add firewall redirect &> /dev/null
+			uci set firewall.@redirect[-1].target="SNAT" &> /dev/null
+			uci set firewall.@redirect[-1].src="wan" &> /dev/null
+			uci set firewall.@redirect[-1].dest="iptv" &> /dev/null
+			uci set firewall.@redirect[-1].enabled="1" &> /dev/null
+			uci set firewall.@redirect[-1].name="iptv_menu" &> /dev/null
+			uci set firewall.@redirect[-1].proto="all" &> /dev/null
+			uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr" &> /dev/null
+		fi
 	fi
 
 	# VOIP Firewall
@@ -442,29 +447,25 @@ mode_misc_cfg() {
 		print "igmpproxy config applied"
 		# Enable igmpproxy
 		service_disable "igmpproxy"
-		igmpproxy_workaround
+		igmpproxy_workaround_enable
+		print "igmpproxy workaround enabled"
 	else
 		# Disable igmpproxy
 		service_disable "igmpproxy"
+		igmpproxy_workaround_disable
+		print "igmpproxy workaround disabled"
 	fi
 
-	# DNS rebind
+	# DNS rebind protection
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci set dhcp.@dnsmasq[0].rebind_domain="www-60.svc.imagenio.telefonica.net"
-		print "DNS rebind disabled"
+		uci set dhcp.@dnsmasq[0].rebind_protection="0"
+		uci commit dhcp
+		print "DNS rebind protection disabled"
+	else
+		uci set dhcp.@dnsmasq[0].rebind_protection="1"
+		uci commit dhcp
+		print "DNS rebind protection enabled"
 	fi
-}
-
-enabled_configs_print() {
-	# Print configuration mode
-	configs_enabled="WAN"
-	if [[ $voip_enabled -eq 1 ]]; then
-		configs_enabled="$configs_enabled + VOIP"
-	fi
-	if [[ $iptv_enabled -eq 1 ]]; then
-		configs_enabled="$configs_enabled + IPTV"
-	fi
-	print $configs_enabled
 }
 
 # Main fun
@@ -502,9 +503,6 @@ main() {
 
 	# Ask for configuration mode
 	mode_ask
-
-	# Print configs enabled
-	enabled_configs_print
 
 	space
 
