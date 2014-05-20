@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r8"
+version="r9"
 debug=0
 vlan_tagged_port="t"
 
@@ -31,6 +31,7 @@ tvlan_ipaddr=""
 tvlan_netmask=""
 deco_enabled=0
 deco_ipaddr=""
+dhcptv_enabled=0
 
 # Common Functions
 print() {
@@ -257,11 +258,16 @@ mode_ask() {
 			print "TV-LAN Netmask (e.g. 255.255.255.248)"
 			tvlan_netmask=$(read_check_ip)
 		else
-			print "Enable video library? (y/n)"
+			print "Enable VOD (Video On Demand)? (y/n)"
+			print "Bug: may cause problems with NAT-PMP"
 			deco_enabled=$(read_check_yesno)
 
-			print "Deco LAN IP addr? (e.g. 192.168.1.200)"
+			print "VOD IPTV decoder LAN IP addr? (e.g. 192.168.1.200)"
+			print "Bug: only 1 VOD IPTV decoder is supported right now."
 			deco_ipaddr=$(read_check_ip)
+
+			print "Enable DHCP for IPTV decoders? (y/n)"
+			dhcptv_enabled=$(read_check_yesno)
 		fi
 	fi
 }
@@ -475,16 +481,12 @@ mode_firewall_cfg() {
 		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
 
 		if [[ $iptv_has_alias -eq 0 ]]; then
-			uci add firewall rule &> /dev/null
-			uci set firewall.@rule[-1].target="ACCEPT" &> /dev/null
-			uci set firewall.@rule[-1].src="wan" &> /dev/null
-			uci set firewall.@rule[-1].dest="iptv" &> /dev/null
-			uci set firewall.@rule[-1].enabled="1" &> /dev/null
-			uci set firewall.@rule[-1].name="iptv_menu" &> /dev/null
-			uci set firewall.@rule[-1].proto="all" &> /dev/null
+			uci add firewall forwarding &> /dev/null
+			uci set firewall.@forwarding[-1].src="wan" &> /dev/null
+			uci set firewall.@forwarding[-1].dest="iptv" &> /dev/null
 
 			if [[ $deco_enabled -eq 1 ]]; then
-				echo -e "iptables -t nat -A PREROUTING -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
+				echo -e "iptables -t nat -A PREROUTING -s 172.26.0.0/16 -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
 				echo -e "" >> "/etc/firewall.user"
 			fi
 		fi
@@ -561,6 +563,27 @@ mode_misc_cfg() {
 		uci set dhcp.@dnsmasq[0].rebind_protection="1"
 		uci commit dhcp
 		print "DNS rebind protection enabled"
+	fi
+
+	# DHCP
+	if [[ $dhcptv_enabled -eq 1 ]]; then
+		uci set dhcp.lan.networkid="tag:!dhcptv"
+
+		uci set dhcp.vendortv=vendorclass
+		uci set dhcp.vendortv.vendorclass="IAL"
+		uci set dhcp.vendortv.networkid="dhcptv"
+
+		uci set dhcp.dhcptv=dhcp
+		uci set dhcp.dhcptv.networkid="tag:dhcptv"
+		uci set dhcp.dhcptv.interface="lan"
+		uci set dhcp.dhcptv.start="200"
+		uci set dhcp.dhcptv.limit="23"
+		uci set dhcp.dhcptv.leasetime="24h"
+		uci set dhcp.dhcptv.dhcp_option="6,172.26.23.3"
+		uci set dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222"
+
+		uci commit dhcp
+		print "IPTV DHCP server configured"
 	fi
 }
 
