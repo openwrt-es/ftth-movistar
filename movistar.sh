@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version=r2
+version=r3
 debug=0
 vlan_tagged_port="t"
 
@@ -64,7 +64,7 @@ read_check_ip() {
 switch_detect() {
 	# Check if switch0 exists
 	switch_exists=0
-	( (swconfig list | grep $switch_name) &> /dev/null ) && switch_exists=1
+	( (swconfig dev $switch_name help) &> /dev/null ) && switch_exists=1
 	if [[ $switch_exists -eq 0 ]]; then
 		error "switch couldn't be detected"
 		exit 1;
@@ -160,12 +160,12 @@ iptv_ask() {
 	iptv_gateway=$(read_check_ip)
 
 	case $iptv_ipaddr in
-			"10."*)
-					iptv_has_alias=0
-					;;
-			"172."*)
-					iptv_has_alias=1
-					;;
+		"10."*)
+			iptv_has_alias=0
+			;;
+		"172."*)
+			iptv_has_alias=1
+			;;
 	esac
 
 	if [[ $iptv_has_alias -eq 1 ]]; then
@@ -242,6 +242,13 @@ set_interface_tvlan() {
 enable_igmp_snooping() {
 	uci set network.lan.igmp_snooping=1
 }
+disable_dns_rebind() {
+	case $iptv_ipaddr in
+		"10."*)
+			uci set dhcp.@dnsmasq[0].rebind_domain="www-60.svc.imagenio.telefonica.net"
+			;;
+	esac
+}
 network_common() {
 	ucidef_set_interface_loopback
 	ucidef_set_interface_lan "eth0.1"
@@ -277,6 +284,19 @@ set_firewall_iptv() {
 	uci add firewall forwarding
 	uci set firewall.@forwarding[-1].src=iptv
 	uci set firewall.@forwarding[-1].dest=lan
+
+	case $iptv_ipaddr in
+		"10."*)
+			uci add firewall redirect
+			uci set firewall.@redirect[-1].target='SNAT'
+			uci set firewall.@redirect[-1].src=wan
+			uci set firewall.@redirect[-1].dest=iptv
+			uci set firewall.@redirect[-1].enabled=1
+			uci set firewall.@redirect[-1].name=iptv_menu
+			uci set firewall.@redirect[-1].proto=all
+			uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr"
+			;;
+	esac
 }
 service_disable() {
 	# Check if service is installed
@@ -359,12 +379,12 @@ set_bird4_voip_iptv() {
 	echo -e "filter iptv_filter {" >> $1
 
 	case $iptv_ipaddr in
-			"10."*)
-					echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-					;;
-			"172."*)
-					echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
-					;;
+		"10."*)
+			echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
+			;;
+		"172."*)
+			echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
+			;;
 	esac
 
 	echo -e "\telse reject;" >> $1
@@ -381,16 +401,16 @@ set_igmpproxy_iptv() {
 	echo -e "option quickleave 1" >> $1
 	echo -e "" >> $1
 	echo -e "config phyint" >> $1
-	echo -e "option network iptv" >> $1
+	echo -e "option network eth0.2" >> $1
 	echo -e "option direction upstream" >> $1
 
 	case $iptv_ipaddr in
-			"10."*)
-					echo -e "list altnet 172.0.0.0/8" >> $1
-					;;
-			"172."*)
-					echo -e "list altnet 172.26.0.0/16" >> $1
-					;;
+		"10."*)
+			echo -e "list altnet 10.0.0.0/8" >> $1
+			;;
+		"172."*)
+			echo -e "list altnet 172.26.0.0/16" >> $1
+			;;
 	esac
 
 	echo -e "" >> $1
@@ -479,6 +499,7 @@ mode_run() {
 			set_interface_tvlan "lan" "$tvlan_ipaddr" "$tvlan_netmask" &> /dev/null
 		fi
 		enable_igmp_snooping
+		disable_dns_rebind
 		print "\tNetwork config loaded"
 		# Save network config
 		uci commit network
