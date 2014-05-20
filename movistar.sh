@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r5"
+version="r6"
 debug=0
 vlan_tagged_port="t"
 
@@ -27,6 +27,8 @@ iptv_gateway=""
 iptv_has_alias=0
 tvlan_ipaddr=""
 tvlan_netmask=""
+deco_enabled=0
+deco_ipaddr=""
 
 # Common Functions
 print() {
@@ -210,6 +212,12 @@ mode_ask() {
 
 			print "TV-LAN Netmask (e.g. 255.255.255.248)"
 			tvlan_netmask=$(read_check_ip)
+		else
+			print "Enable video library? (y/n)"
+			deco_enabled=$(read_check_yesno)
+
+			print "Deco LAN IP addr? (e.g. 192.168.1.200)"
+			deco_ipaddr=$(read_check_ip)
 		fi
 	fi
 }
@@ -270,12 +278,22 @@ set_igmpproxy() {
 	echo -e "config phyint" >> $1
 	echo -e "option network eth0.2" >> $1
 	echo -e "option direction upstream" >> $1
-    echo -e "list altnet 172.26.0.0/16" >> $1
+	echo -e "list altnet 172.26.0.0/16" >> $1
 	echo -e "list altnet 192.168.1.0/24" >> $1
 	echo -e "" >> $1
 	echo -e "config phyint" >> $1
 	echo -e "option network br-lan" >> $1
 	echo -e "option direction downstream" >> $1
+	echo -e "" >> $1
+}
+set_firewall_user() {
+	echo -e "# This file is interpreted as shell script." > $1
+	echo -e "# Put your custom iptables rules here, they will" >> $1
+	echo -e "# be executed with each firewall (re-)start." >> $1
+	echo -e "" >> $1
+	echo -e "# Internal uci firewall chains are flushed and recreated on reload, so" >> $1
+	echo -e "# put custom rules into the root chains e.g. INPUT or FORWARD or into the" >> $1
+	echo -e "# special user chains, e.g. input_wan_rule or postrouting_lan_rule." >> $1
 	echo -e "" >> $1
 }
 
@@ -374,6 +392,7 @@ mode_firewall_cfg() {
 	# Firewall default config
 	rm -rf /etc/config/firewall
 	cp /rom/etc/config/firewall /etc/config
+	set_firewall_user "/etc/firewall.user"
 
 	# IPTV Firewall
 	if [[ $iptv_enabled -eq 1 ]]; then
@@ -396,14 +415,18 @@ mode_firewall_cfg() {
 		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
 
 		if [[ $iptv_has_alias -eq 0 ]]; then
-			uci add firewall redirect &> /dev/null
-			uci set firewall.@redirect[-1].target="SNAT" &> /dev/null
-			uci set firewall.@redirect[-1].src="wan" &> /dev/null
-			uci set firewall.@redirect[-1].dest="iptv" &> /dev/null
-			uci set firewall.@redirect[-1].enabled="1" &> /dev/null
-			uci set firewall.@redirect[-1].name="iptv_menu" &> /dev/null
-			uci set firewall.@redirect[-1].proto="all" &> /dev/null
-			uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr" &> /dev/null
+			uci add firewall rule &> /dev/null
+			uci set firewall.@rule[-1].target="ACCEPT" &> /dev/null
+			uci set firewall.@rule[-1].src="wan" &> /dev/null
+			uci set firewall.@rule[-1].dest="iptv" &> /dev/null
+			uci set firewall.@rule[-1].enabled="1" &> /dev/null
+			uci set firewall.@rule[-1].name="iptv_menu" &> /dev/null
+			uci set firewall.@rule[-1].proto="all" &> /dev/null
+
+			if [[ $deco_enabled -eq 1 ]]; then
+				echo -e "iptables -t nat -A PREROUTING -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
+				echo -e "" >> "/etc/firewall.user"
+			fi
 		fi
 	fi
 
