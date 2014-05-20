@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version=r3
+version="r4"
 debug=0
 vlan_tagged_port="t"
 
@@ -19,7 +19,8 @@ switch_port_num=0
 switch_port_cpu=-1
 switch_port_wan=-1
 switch_port_lan=-1
-config_mode=0
+voip_enabled=0
+iptv_enabled=0
 iptv_ipaddr=""
 iptv_netmask=""
 iptv_gateway=""
@@ -58,6 +59,41 @@ read_check_ip() {
 	done
 
 	echo $ip
+}
+read_check_yesno() {
+	local answer=""
+	local valid=0
+
+	while [[ $valid -eq 0 ]]
+	do
+		read answer
+		if [[ $answer == "y" || $answer == "n" ]]; then
+			valid=1
+		fi
+	done
+
+	if [[ $answer == "y" ]]; then
+		echo 1
+	else
+		echo 0
+	fi
+}
+service_disable() {
+	# Check if service is installed
+	if [ -f /etc/init.d/$1 ]; then
+		/etc/init.d/$1 stop
+		/etc/init.d/$1 disable
+		print "$1 disabled"
+	fi
+}
+service_enable() {
+	# Check if service is installed
+	if [ -f /etc/init.d/$1 ]; then
+		/etc/init.d/$1 enable
+		/etc/init.d/$1 stop
+		/etc/init.d/$1 start
+		print "$1 enabled"
+	fi
 }
 
 # Funs
@@ -122,200 +158,49 @@ wan_port_ask() {
 	done
 }
 mode_ask() {
-	# Print mode info
-	print "Services"
-	print "\t1: WAN"
-	print "\t2: WAN + VOIP"
-	print "\t3: WAN + VOIP + IPTV"
+	# Ask for VOIP
+	print "Enable VOIP? (y/n)"
+	voip_enabled=$(read_check_yesno)
 
-	# Read input
-	read config_mode
+	# Ask for IPTV
+	print "Enable IPTV? (y/n)"
+	iptv_enabled=$(read_check_yesno)
 
-	# Check selected option
-	error=1
-	if [[ $config_mode -eq 1 ]]; then
-		debug "Selected: WAN"
-		error=0
-	fi
-	if [[ $config_mode -eq 2 ]]; then
-		debug "Selected: WAN + VOIP"
-		error=0
-	fi
-	if [[ $config_mode -eq 3 ]]; then
-		debug "Selected: WAN + VOIP + IPTV"
-		error=0
-	fi
-	if [[ $error -eq 1 ]]; then
-		mode_ask
-	fi
-}
-iptv_ask() {
-	print "IPTV IP Address"
-	iptv_ipaddr=$(read_check_ip)
+	# Ask for IPTV configuration
+	if [[ $iptv_enabled -eq 1 ]]; then
+		print "IPTV IP Address (e.g 172.26.0.2/10.128.0.2)"
+		iptv_ipaddr=$(read_check_ip)
 
-	print "IPTV Netmask"
-	iptv_netmask=$(read_check_ip)
+		case $iptv_ipaddr in
+			"10."*)
+				iptv_has_alias=0
+				;;
+			"172."*)
+				iptv_has_alias=1
+				;;
+			*)
+				error "Unsupported IPTV IP address"
+				iptv_ask
+				;;
+		esac
 
-	print "IPTV Gateway"
-	iptv_gateway=$(read_check_ip)
+		print "IPTV Netmask (e.g. 255.255.240.0/255.128.0.0)"
+		iptv_netmask=$(read_check_ip)
 
-	case $iptv_ipaddr in
-		"10."*)
-			iptv_has_alias=0
-			;;
-		"172."*)
-			iptv_has_alias=1
-			;;
-	esac
+		print "IPTV Gateway (e.g. 172.26.208.1/10.128.0.1)"
+		iptv_gateway=$(read_check_ip)
 
-	if [[ $iptv_has_alias -eq 1 ]]; then
-		print "TV-LAN Alias"
-		tvlan_ipaddr=$(read_check_ip)
+		if [[ $iptv_has_alias -eq 1 ]]; then
+			print "TV-LAN Alias (e.g. 10.0.0.1)"
+			tvlan_ipaddr=$(read_check_ip)
 
-		print "TV-LAN Netmask"
-		tvlan_netmask=$(read_check_ip)
+			print "TV-LAN Netmask (e.g. 255.255.255.248)"
+			tvlan_netmask=$(read_check_ip)
+		fi
 	fi
 }
 
-network_empty() {
-	rm -rf /etc/config/network
-	touch /etc/config/network
-}
-firewall_default() {
-	rm -rf /etc/config/firewall
-	cp /rom/etc/config/firewall /etc/config
-}
-set_interface_wan() {
-	local ifname=$1
-
-	uci batch <<EOF
-set network.wan='interface'
-set network.wan.ifname='$ifname'
-set network.wan.proto='pppoe'
-set network.wan.username='adslppp@telefonicanetpa'
-set network.wan.password='adslppp'
-EOF
-}
-set_interface_voip() {
-	local ifname=$1
-
-	uci batch <<EOF
-set network.voip='interface'
-set network.voip.ifname='$ifname'
-set network.voip.proto='dhcp'
-set network.voip.defaultroute='0'
-set network.voip.peerdns='0'
-EOF
-
-	ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port"
-}
-set_interface_iptv() {
-	local ifname=$1
-	local ipaddr=$2
-	local netmask=$3
-	local gateway=$4
-
-	uci batch <<EOF
-set network.iptv='interface'
-set network.iptv.ifname='$ifname'
-set network.iptv.proto='static'
-set network.iptv.ipaddr='$ipaddr'
-set network.iptv.netmask='$netmask'
-set network.iptv.gateway='$gateway'
-set network.iptv.defaultroute='0'
-set network.iptv.peerdns='0'
-EOF
-
-	ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port"
-}
-set_interface_tvlan() {
-	local interface=$1
-	local ipaddr=$2
-	local netmask=$3
-
-	uci add network alias
-	uci set network.@alias[-1].interface="$interface"
-	uci set network.@alias[-1].proto='static'
-	uci set network.@alias[-1].ipaddr="$ipaddr"
-	uci set network.@alias[-1].netmask="$netmask"
-}
-enable_igmp_snooping() {
-	uci set network.lan.igmp_snooping=1
-}
-disable_dns_rebind() {
-	case $iptv_ipaddr in
-		"10."*)
-			uci set dhcp.@dnsmasq[0].rebind_domain="www-60.svc.imagenio.telefonica.net"
-			;;
-	esac
-}
-network_common() {
-	ucidef_set_interface_loopback
-	ucidef_set_interface_lan "eth0.1"
-	set_interface_wan "eth0.6"
-	ucidef_add_switch "switch0" "1" "1"
-	ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port"
-	ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port"
-}
-set_firewall_voip() {
-	uci add firewall zone
-	uci set firewall.@zone[-1].name=voip
-	uci set firewall.@zone[-1].input=ACCEPT
-	uci set firewall.@zone[-1].output=ACCEPT
-	uci set firewall.@zone[-1].forward=REJECT
-	uci set firewall.@zone[-1].network=voip
-	uci set firewall.@zone[-1].masq=1
-
-	uci add firewall forwarding
-	uci set firewall.@forwarding[-1].src=lan
-	uci set firewall.@forwarding[-1].dest=voip
-}
-set_firewall_iptv() {
-	uci add firewall zone
-	uci set firewall.@zone[-1].name=iptv
-	uci set firewall.@zone[-1].input=ACCEPT
-	uci set firewall.@zone[-1].output=ACCEPT
-	uci set firewall.@zone[-1].forward=REJECT
-	uci set firewall.@zone[-1].network=iptv
-
-	uci add firewall forwarding
-	uci set firewall.@forwarding[-1].src=lan
-	uci set firewall.@forwarding[-1].dest=iptv
-	uci add firewall forwarding
-	uci set firewall.@forwarding[-1].src=iptv
-	uci set firewall.@forwarding[-1].dest=lan
-
-	case $iptv_ipaddr in
-		"10."*)
-			uci add firewall redirect
-			uci set firewall.@redirect[-1].target='SNAT'
-			uci set firewall.@redirect[-1].src=wan
-			uci set firewall.@redirect[-1].dest=iptv
-			uci set firewall.@redirect[-1].enabled=1
-			uci set firewall.@redirect[-1].name=iptv_menu
-			uci set firewall.@redirect[-1].proto=all
-			uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr"
-			;;
-	esac
-}
-service_disable() {
-	# Check if service is installed
-	if [ -f /etc/init.d/$1 ]; then
-		/etc/init.d/$1 stop
-		/etc/init.d/$1 disable
-		print "\t$1 disabled"
-	fi
-}
-service_enable() {
-	# Check if service is installed
-	if [ -f /etc/init.d/$1 ]; then
-		/etc/init.d/$1 enable
-		/etc/init.d/$1 stop
-		/etc/init.d/$1 start
-		print "\t$1 enabled"
-	fi
-}
-set_bird4_voip() {
+set_bird4() {
 	echo -e "log syslog all;" > $1
 	echo -e "" >> $1
 	echo -e "router id 192.168.1.1;" >> $1
@@ -335,68 +220,42 @@ set_bird4_voip() {
 	echo -e "\texport none;" >> $1
 	echo -e "}" >> $1
 	echo -e "" >> $1
-	echo -e "filter voip_filter {" >> $1
-	echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-	echo -e "\telse reject;" >> $1
-	echo -e "}" >> $1
-	echo -e "protocol rip {" >> $1
-	echo -e "\timport all;" >> $1
-	echo -e "\texport filter voip_filter;" >> $1
-	echo -e "\tinterface \"eth0.3\";" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-}
-set_bird4_voip_iptv() {
-	echo -e "log syslog all;" > $1
-	echo -e "" >> $1
-	echo -e "router id 192.168.1.1;" >> $1
-	echo -e "" >> $1
-	echo -e "protocol kernel {" >> $1
-	echo -e "\tpersist;" >> $1
-	echo -e "\tscan time 20;" >> $1
-	echo -e "\timport all;" >> $1
-	echo -e "\texport all;" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-	echo -e "protocol device {" >> $1
-	echo -e "\tscan time 10;" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-	echo -e "protocol static {" >> $1
-	echo -e "\texport none;" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-	echo -e "filter voip_filter {" >> $1
-	echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-	echo -e "\telse reject;" >> $1
-	echo -e "}" >> $1
-	echo -e "protocol rip voip {" >> $1
-	echo -e "\timport all;" >> $1
-	echo -e "\texport filter voip_filter;" >> $1
-	echo -e "\tinterface \"eth0.3\";" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-	echo -e "filter iptv_filter {" >> $1
+	if [[ $voip_enabled -eq 1 ]]; then
+		echo -e "filter voip_filter {" >> $1
+		echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
+		echo -e "\telse reject;" >> $1
+		echo -e "}" >> $1
+		echo -e "protocol rip voip {" >> $1
+		echo -e "\timport all;" >> $1
+		echo -e "\texport filter voip_filter;" >> $1
+		echo -e "\tinterface \"eth0.3\";" >> $1
+		echo -e "}" >> $1
+		echo -e "" >> $1
+	fi
 
-	case $iptv_ipaddr in
-		"10."*)
-			echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-			;;
-		"172."*)
-			echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
-			;;
-	esac
+	if [[ $iptv_enabled -eq 1 ]]; then
+		echo -e "filter iptv_filter {" >> $1
 
-	echo -e "\telse reject;" >> $1
-	echo -e "}" >> $1
-	echo -e "protocol rip iptv {" >> $1
-	echo -e "\timport all;" >> $1
-	echo -e "\texport filter iptv_filter;" >> $1
-	echo -e "\tinterface \"eth0.2\";" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
+		case $iptv_ipaddr in
+			"10."*)
+				echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
+				;;
+			"172."*)
+				echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
+				;;
+		esac
+
+		echo -e "\telse reject;" >> $1
+		echo -e "}" >> $1
+		echo -e "protocol rip iptv {" >> $1
+		echo -e "\timport all;" >> $1
+		echo -e "\texport filter iptv_filter;" >> $1
+		echo -e "\tinterface \"eth0.2\";" >> $1
+		echo -e "}" >> $1
+		echo -e "" >> $1
+	fi
 }
-set_igmpproxy_iptv() {
+set_igmpproxy() {
 	echo -e "config igmpproxy" > $1
 	echo -e "option quickleave 1" >> $1
 	echo -e "" >> $1
@@ -415,120 +274,197 @@ set_igmpproxy_iptv() {
 
 	echo -e "" >> $1
 	echo -e "config phyint" >> $1
-	echo -e "option network lan" >> $1
+	echo -e "option network br-lan" >> $1
 	echo -e "option direction downstream" >> $1
 	echo -e "" >> $1
 }
 
-mode_run() {
-	# Check configuration mode
-	if [[ $config_mode -eq 1 ]]; then
-		print "WAN"
+igmpproxy_workaround() {
+	echo -e "# Put your custom commands here that should be executed once" > /etc/rc.local
+	echo -e "# the system init finished. By default this file does nothing." >> /etc/rc.local
+	echo -e "" >> /etc/rc.local
 
-		# Erase network config
-		network_empty
-		print "\tNetwork config erased"
-		# Load network config
-		network_common &> /dev/null
-		print "\tNetwork config loaded"
-		# Save network config
-		uci commit network
-		print "\tNetwork config applied"
+	if [[ $iptv_enabled -eq 1 ]]; then
+		echo -e "sleep 5 && /etc/init.d/igmpproxy start &" >> /etc/rc.local
+		echo -e "" >> /etc/rc.local
+	fi
 
-		# Firewall default config
-		firewall_default
-		print "\tFirewall config applied"
-		# Load firewall config
-		print "\tFirewall config loaded"
-		# Save firewall config
-		uci commit firewall
-		print "\tFirewall config saved"
+	echo -e "exit 0" >> /etc/rc.local
+	echo -e "" >> /etc/rc.local
+}
 
+mode_network_cfg() {
+	# Erase network config
+	rm -rf /etc/config/network
+	touch /etc/config/network
+	print "Network config erased"
+
+	# Loopback
+	ucidef_set_interface_loopback &> /dev/null
+
+	# Switch config
+	ucidef_add_switch "switch0" "1" "1" &> /dev/null
+	ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port" &> /dev/null
+	if [[ $iptv_enabled -eq 1 ]]; then
+		ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+	fi
+	if [[ $voip_enabled -eq 1 ]]; then
+		ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+	fi
+	ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+
+	# LAN
+	uci set network.lan="interface" &> /dev/null
+	uci set network.lan.ifname="eth0.1" &> /dev/null
+	uci set network.lan.type="bridge" &> /dev/null
+	uci set network.lan.proto="static" &> /dev/null
+	uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
+	uci set network.lan.netmask="255.255.255.0" &> /dev/null
+	uci set network.lan.ip6assign="60" &> /dev/null
+	if [[ $iptv_enabled -eq 1 ]]; then
+		uci set network.lan.igmp_snooping="1" &> /dev/null
+		if [[ $iptv_has_alias -eq 1 ]]; then
+			uci add network alias &> /dev/null
+			uci set network.@alias[-1].interface="lan" &> /dev/null
+			uci set network.@alias[-1].proto="static" &> /dev/null
+			uci set network.@alias[-1].ipaddr="$tvlan_ipaddr" &> /dev/null
+			uci set network.@alias[-1].netmask="$tvlan_netmask" &> /dev/null
+		fi
+	fi
+
+	# IPTV
+	if [[ $iptv_enabled -eq 1 ]]; then
+		uci set network.iptv="interface" &> /dev/null
+		uci set network.iptv.ifname="eth0.2" &> /dev/null
+		uci set network.iptv.proto="static" &> /dev/null
+		uci set network.iptv.ipaddr="$iptv_ipaddr" &> /dev/null
+		uci set network.iptv.netmask="$iptv_netmask" &> /dev/null
+		uci set network.iptv.gateway="$iptv_gateway" &> /dev/null
+		uci set network.iptv.defaultroute="0" &> /dev/null
+		uci set network.iptv.peerdns="0" &> /dev/null
+	fi
+
+	# VOIP
+	if [[ $voip_enabled -eq 1 ]]; then
+		uci set network.voip="interface" &> /dev/null
+		uci set network.voip.ifname="eth0.3" &> /dev/null
+		uci set network.voip.proto="dhcp" &> /dev/null
+		uci set network.voip.defaultroute="0" &> /dev/null
+		uci set network.voip.peerdns="0" &> /dev/null
+	fi
+
+	# WAN
+	uci set network.wan="interface" &> /dev/null
+	uci set network.wan.ifname="eth0.6" &> /dev/null
+	uci set network.wan.proto="pppoe" &> /dev/null
+	uci set network.wan.username="adslppp@telefonicanetpa" &> /dev/null
+	uci set network.wan.password="adslppp" &> /dev/null
+
+	# Load network config
+	print "Network config loaded"
+
+	# Save network config
+	uci commit network
+	print "Network config applied"
+}
+mode_firewall_cfg() {
+	# Firewall default config
+	rm -rf /etc/config/firewall
+	cp /rom/etc/config/firewall /etc/config
+
+	# IPTV Firewall
+	if [[ $iptv_enabled -eq 1 ]]; then
+		uci add firewall zone &> /dev/null
+		uci set firewall.@zone[-1].name="iptv" &> /dev/null
+		uci set firewall.@zone[-1].input="ACCEPT" &> /dev/null
+		uci set firewall.@zone[-1].output="ACCEPT" &> /dev/null
+		uci set firewall.@zone[-1].forward="REJECT" &> /dev/null
+		uci set firewall.@zone[-1].network="iptv" &> /dev/null
+
+		uci add firewall forwarding &> /dev/null
+		uci set firewall.@forwarding[-1].src="lan" &> /dev/null
+		uci set firewall.@forwarding[-1].dest="iptv" &> /dev/null
+		uci add firewall forwarding &> /dev/null
+		uci set firewall.@forwarding[-1].src="iptv" &> /dev/null
+		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
+
+		case $iptv_ipaddr in
+			"10."*)
+				uci add firewall redirect &> /dev/null
+				uci set firewall.@redirect[-1].target="SNAT" &> /dev/null
+				uci set firewall.@redirect[-1].src="wan" &> /dev/null
+				uci set firewall.@redirect[-1].dest="iptv" &> /dev/null
+				uci set firewall.@redirect[-1].enabled="1" &> /dev/null
+				uci set firewall.@redirect[-1].name="iptv_menu" &> /dev/null
+				uci set firewall.@redirect[-1].proto="all" &> /dev/null
+				uci set firewall.@redirect[-1].src_dip="$iptv_ipaddr" &> /dev/null
+				;;
+		esac
+	fi
+
+	# VOIP Firewall
+	if [[ $voip_enabled -eq 1 ]]; then
+		uci add firewall zone &> /dev/null
+		uci set firewall.@zone[-1].name="voip" &> /dev/null
+		uci set firewall.@zone[-1].input="ACCEPT" &> /dev/null
+		uci set firewall.@zone[-1].output="ACCEPT" &> /dev/null
+		uci set firewall.@zone[-1].forward="REJECT" &> /dev/null
+		uci set firewall.@zone[-1].network="voip" &> /dev/null
+		uci set firewall.@zone[-1].masq="1" &> /dev/null
+
+		uci add firewall forwarding &> /dev/null
+		uci set firewall.@forwarding[-1].src="lan" &> /dev/null
+		uci set firewall.@forwarding[-1].dest="voip" &> /dev/null
+	fi
+
+	# Save firewall config
+	uci commit firewall
+	print "Firewall config saved"
+}
+mode_misc_cfg() {
+	# bird4
+	if [[ $voip_enabled -eq 1 || $iptv_enabled -eq 1 ]]; then
+		# Set bird4 config
+		set_bird4 "/etc/bird4.conf"
+		set_bird4 "/etc/bird.conf"
+		print "bird4 config applied"
+		# Enable bird4
+		service_enable "bird4"
+	else
 		# Disable bird4
 		service_disable "bird4"
-
-		# Disable igmpproxy
-		service_disable "igmpproxy"
 	fi
-	if [[ $config_mode -eq 2 ]]; then
-		print "WAN + VOIP"
 
-		# Erase network config
-		network_empty
-		print "\tNetwork config erased"
-		# Load network config
-		network_common &> /dev/null
-		set_interface_voip "eth0.3" &> /dev/null
-		print "\tNetwork config loaded"
-		# Save network config
-		uci commit network
-		print "\tNetwork config saved"
-
-		# Erase firewall config
-		firewall_default
-		print "\tFirewall config erased"
-		# Load firewall config
-		set_firewall_voip &> /dev/null
-		print "\tFirewall config loaded"
-		# Save firewall config
-		uci commit firewall
-		print "\tFirewall config saved"
-
-		# Set bird4 config
-		set_bird4_voip "/etc/bird4.conf"
-		set_bird4_voip "/etc/bird.conf"
-		print "\tbird4 config applied"
-		# Enable bird4
-		service_enable "bird4"
-
-		# Disable igmpproxy
-		service_disable "igmpproxy"
-	fi
-	if [[ $config_mode -eq 3 ]]; then
-		print "WAN + VOIP + IPTV"
-
-		# Erase network config
-		network_empty
-		print "\tNetwork config erased"
-		# Load network config
-		network_common &> /dev/null
-		set_interface_voip "eth0.3" &> /dev/null
-		iptv_ask
-		set_interface_iptv "eth0.2" "$iptv_ipaddr" "$iptv_netmask" "$iptv_gateway" &> /dev/null
-		if [[ $iptv_has_alias -eq 1 ]]; then
-			set_interface_tvlan "lan" "$tvlan_ipaddr" "$tvlan_netmask" &> /dev/null
-		fi
-		enable_igmp_snooping
-		disable_dns_rebind
-		print "\tNetwork config loaded"
-		# Save network config
-		uci commit network
-		print "\tNetwork config saved"
-
-		# Erase firewall config
-		firewall_default
-		print "\tFirewall config erased"
-		# Load firewall config
-		set_firewall_voip &> /dev/null
-		set_firewall_iptv &> /dev/null
-		print "\tFirewall config loaded"
-		# Save firewall config
-		uci commit firewall
-		print "\tFirewall config saved"
-
-		# Set bird4 config
-		set_bird4_voip_iptv "/etc/bird4.conf"
-		set_bird4_voip_iptv "/etc/bird.conf"
-		print "\tbird4 config applied"
-		# Enable bird4
-		service_enable "bird4"
-
+	# igmpproxy
+	if [[ $iptv_enabled -eq 1 ]]; then
 		# Set igmpproxy config
-		set_igmpproxy_iptv "/etc/config/igmpproxy"
-		print "\tigmpproxy config applied"
+		set_igmpproxy "/etc/config/igmpproxy"
+		print "igmpproxy config applied"
 		# Enable igmpproxy
-		service_enable "igmpproxy"
+		service_disable "igmpproxy"
+		igmpproxy_workaround
+	else
+		# Disable igmpproxy
+		service_disable "igmpproxy"
 	fi
+
+	# DNS rebind
+	if [[ $iptv_enabled -eq 1 ]]; then
+		uci set dhcp.@dnsmasq[0].rebind_domain="www-60.svc.imagenio.telefonica.net"
+		print "DNS rebind disabled"
+	fi
+}
+
+enabled_configs_print() {
+	# Print configuration mode
+	configs_enabled="WAN"
+	if [[ $voip_enabled -eq 1 ]]; then
+		configs_enabled="$configs_enabled + VOIP"
+	fi
+	if [[ $iptv_enabled -eq 1 ]]; then
+		configs_enabled="$configs_enabled + IPTV"
+	fi
+	print $configs_enabled
 }
 
 # Main fun
@@ -567,10 +503,19 @@ main() {
 	# Ask for configuration mode
 	mode_ask
 
+	# Print configs enabled
+	enabled_configs_print
+
 	space
 
-	# Execute configuration mode
-	mode_run
+	# Configure network
+	mode_network_cfg
+
+	# Configure firewall
+	mode_firewall_cfg
+
+	# Configure misc
+	mode_misc_cfg
 
 	space
 
