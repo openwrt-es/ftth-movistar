@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r6"
+version="r7"
 debug=0
 vlan_tagged_port="t"
 
@@ -100,6 +100,25 @@ service_enable() {
 		/etc/init.d/$1 start
 		print "$1 enabled"
 	fi
+}
+netmask_cidr() {
+	nbits=0
+	IFS=.
+	for dec in $1 ; do
+		case $dec in
+			255) let nbits+=8;;
+			254) let nbits+=7;;
+			252) let nbits+=6;;
+			248) let nbits+=5;;
+			240) let nbits+=4;;
+			224) let nbits+=3;;
+			192) let nbits+=2;;
+			128) let nbits+=1;;
+			0);;
+			*) echo "Error: $dec is not recognised"; exit 1
+		esac
+	done
+	echo "$nbits"
 }
 
 # Funs
@@ -286,6 +305,18 @@ set_igmpproxy() {
 	echo -e "option direction downstream" >> $1
 	echo -e "" >> $1
 }
+set_mcproxy() {
+	echo -e "######################################" > $1
+	echo -e "##-- mcproxy configuration script --##" >> $1
+	echo -e "######################################" >> $1
+	echo -e "" >> $1
+	echo -e "# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)" >> $1
+	echo -e "protocol IGMPv2;" >> $1
+	echo -e "" >> $1
+	echo -e "# Proxy Instance: upstream ==> downstream" >> $1
+	echo -e "pinstance iptv: \"eth0.2\" ==> \"br-lan\";" >> $1
+	echo -e "" >> $1
+}
 set_firewall_user() {
 	echo -e "# This file is interpreted as shell script." > $1
 	echo -e "# Put your custom iptables rules here, they will" >> $1
@@ -339,18 +370,20 @@ mode_network_cfg() {
 	uci set network.lan.ifname="eth0.1" &> /dev/null
 	uci set network.lan.type="bridge" &> /dev/null
 	uci set network.lan.proto="static" &> /dev/null
-	uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
-	uci set network.lan.netmask="255.255.255.0" &> /dev/null
 	uci set network.lan.ip6assign="60" &> /dev/null
 	if [[ $iptv_enabled -eq 1 ]]; then
 		uci set network.lan.igmp_snooping="1" &> /dev/null
 		if [[ $iptv_has_alias -eq 1 ]]; then
-			uci add network alias &> /dev/null
-			uci set network.@alias[-1].interface="lan" &> /dev/null
-			uci set network.@alias[-1].proto="static" &> /dev/null
-			uci set network.@alias[-1].ipaddr="$tvlan_ipaddr" &> /dev/null
-			uci set network.@alias[-1].netmask="$tvlan_netmask" &> /dev/null
+			tvlan_cidr=$(netmask_cidr $tvlan_netmask)
+			uci add_list network.lan.ipaddr="$tvlan_ipaddr/$tvlan_cidr" &> /dev/null
+			uci add_list network.lan.ipaddr="192.168.1.1/24" &> /dev/null
+		else
+			uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
+			uci set network.lan.netmask="255.255.255.0" &> /dev/null
 		fi
+	else
+		uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
+		uci set network.lan.netmask="255.255.255.0" &> /dev/null
 	fi
 
 	# IPTV
@@ -453,8 +486,12 @@ mode_misc_cfg() {
 	# bird4
 	if [[ $voip_enabled -eq 1 || $iptv_enabled -eq 1 ]]; then
 		# Set bird4 config
-		set_bird4 "/etc/bird4.conf"
-		set_bird4 "/etc/bird.conf"
+		if [ -f /etc/bird4.conf ]; then
+			set_bird4 "/etc/bird4.conf"
+		fi
+		if [ -f /etc/bird.conf ]; then
+			set_bird4 "/etc/bird.conf"
+		fi
 		print "bird4 config applied"
 		# Enable bird4
 		service_enable "bird4"
@@ -463,15 +500,24 @@ mode_misc_cfg() {
 		service_disable "bird4"
 	fi
 
-	# igmpproxy
+	# Multicast
 	if [[ $iptv_enabled -eq 1 ]]; then
-		# Set igmpproxy config
-		set_igmpproxy "/etc/config/igmpproxy"
-		print "igmpproxy config applied"
-		# Enable igmpproxy
-		service_disable "igmpproxy"
-		igmpproxy_workaround_enable
-		print "igmpproxy workaround enabled"
+		# Use mcproxy over igmpproxy
+		if [ -f /usr/sbin/mcproxy ]; then
+			# Set mcproxy config
+			set_mcproxy "/etc/mcproxy.conf"
+			print "mcproxy config applied"
+			# Enable mcproxy
+			service_enable "mcproxy"
+		else
+			# Set igmpproxy config
+			set_igmpproxy "/etc/config/igmpproxy"
+			print "igmpproxy config applied"
+			# Enable igmpproxy
+			service_disable "igmpproxy"
+			igmpproxy_workaround_enable
+			print "igmpproxy workaround enabled"
+		fi
 	else
 		# Disable igmpproxy
 		service_disable "igmpproxy"
