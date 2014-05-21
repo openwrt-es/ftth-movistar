@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r9"
+version="r10"
 debug=0
 vlan_tagged_port="t"
 
@@ -262,9 +262,11 @@ mode_ask() {
 			print "Bug: may cause problems with NAT-PMP"
 			deco_enabled=$(read_check_yesno)
 
-			print "VOD IPTV decoder LAN IP addr? (e.g. 192.168.1.200)"
-			print "Bug: only 1 VOD IPTV decoder is supported right now."
-			deco_ipaddr=$(read_check_ip)
+			if [[ $deco_enabled -eq 1 ]]; then
+				print "VOD IPTV decoder LAN IP addr? (e.g. 192.168.1.200)"
+				print "Bug: only 1 VOD IPTV decoder is supported right now."
+				deco_ipaddr=$(read_check_ip)
+			fi
 
 			print "Enable DHCP for IPTV decoders? (y/n)"
 			dhcptv_enabled=$(read_check_yesno)
@@ -289,7 +291,12 @@ set_bird4() {
 	echo -e "}" >> $1
 	echo -e "" >> $1
 	echo -e "protocol static {" >> $1
-	echo -e "\texport none;" >> $1
+	if [[ $iptv_enabled -eq 1 && $iptv_has_alias -eq 0 ]]; then
+		echo -e "\texport all;" >> $1
+		echo -e "\troute 172.26.0.0/16 via $iptv_gateway;" >> $1
+	else
+		echo -e "\texport none;" >> $1
+	fi
 	echo -e "}" >> $1
 	echo -e "" >> $1
 
@@ -480,15 +487,9 @@ mode_firewall_cfg() {
 		uci set firewall.@forwarding[-1].src="iptv" &> /dev/null
 		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
 
-		if [[ $iptv_has_alias -eq 0 ]]; then
-			uci add firewall forwarding &> /dev/null
-			uci set firewall.@forwarding[-1].src="wan" &> /dev/null
-			uci set firewall.@forwarding[-1].dest="iptv" &> /dev/null
-
-			if [[ $deco_enabled -eq 1 ]]; then
-				echo -e "iptables -t nat -A PREROUTING -s 172.26.0.0/16 -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
-				echo -e "" >> "/etc/firewall.user"
-			fi
+		if [[ $iptv_has_alias -eq 0 && $deco_enabled -eq 1 ]]; then
+			echo -e "iptables -t nat -A PREROUTING -s 172.26.0.0/16 -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
+			echo -e "" >> "/etc/firewall.user"
 		fi
 	fi
 
@@ -568,6 +569,8 @@ mode_misc_cfg() {
 	# DHCP
 	if [[ $dhcptv_enabled -eq 1 ]]; then
 		uci set dhcp.lan.networkid="tag:!dhcptv"
+		uci set dhcp.lan.start="100"
+		uci set dhcp.lan.limit="100"
 
 		uci set dhcp.vendortv=vendorclass
 		uci set dhcp.vendortv.vendorclass="IAL"
@@ -579,8 +582,9 @@ mode_misc_cfg() {
 		uci set dhcp.dhcptv.start="200"
 		uci set dhcp.dhcptv.limit="23"
 		uci set dhcp.dhcptv.leasetime="24h"
-		uci set dhcp.dhcptv.dhcp_option="6,172.26.23.3"
-		uci set dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222"
+		uci delete dhcp.dhcptv.dhcp_option
+		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3"
+		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222"
 
 		uci commit dhcp
 		print "IPTV DHCP server configured"
@@ -653,4 +657,3 @@ main
 
 # Quit
 exit 0
-
