@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r10"
+version="r11"
 debug=0
 vlan_tagged_port="t"
 
@@ -137,11 +137,12 @@ switch_detect() {
 	# Detect special switch configurations
 	switch_list=$(swconfig list)
 	case $switch_list in
+		*"ag71xx-mdio"* |\
 		*"rtl8366"*)
-				if [[ -d "/sys/class/net/eth1" ]]; then
-					switch_special_wan=1
-					switch_ifname_wan="eth1"
-				fi
+			if [[ -d "/sys/class/net/eth1" ]]; then
+				switch_special_wan=1
+				switch_ifname_wan="eth1"
+			fi
 			;;
 	esac
 
@@ -557,34 +558,34 @@ mode_misc_cfg() {
 
 	# DNS rebind protection
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci set dhcp.@dnsmasq[0].rebind_protection="0"
+		uci set dhcp.@dnsmasq[0].rebind_protection="0" &> /dev/null
 		uci commit dhcp
 		print "DNS rebind protection disabled"
 	else
-		uci set dhcp.@dnsmasq[0].rebind_protection="1"
+		uci set dhcp.@dnsmasq[0].rebind_protection="1" &> /dev/null
 		uci commit dhcp
 		print "DNS rebind protection enabled"
 	fi
 
 	# DHCP
 	if [[ $dhcptv_enabled -eq 1 ]]; then
-		uci set dhcp.lan.networkid="tag:!dhcptv"
-		uci set dhcp.lan.start="100"
-		uci set dhcp.lan.limit="100"
+		uci set dhcp.lan.networkid="tag:!dhcptv" &> /dev/null
+		uci set dhcp.lan.start="100" &> /dev/null
+		uci set dhcp.lan.limit="100" &> /dev/null
 
-		uci set dhcp.vendortv=vendorclass
-		uci set dhcp.vendortv.vendorclass="IAL"
-		uci set dhcp.vendortv.networkid="dhcptv"
+		uci set dhcp.vendortv=vendorclass &> /dev/null
+		uci set dhcp.vendortv.vendorclass="IAL" &> /dev/null
+		uci set dhcp.vendortv.networkid="dhcptv" &> /dev/null
 
-		uci set dhcp.dhcptv=dhcp
-		uci set dhcp.dhcptv.networkid="tag:dhcptv"
-		uci set dhcp.dhcptv.interface="lan"
-		uci set dhcp.dhcptv.start="200"
-		uci set dhcp.dhcptv.limit="23"
-		uci set dhcp.dhcptv.leasetime="24h"
-		uci delete dhcp.dhcptv.dhcp_option
-		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3"
-		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222"
+		uci set dhcp.dhcptv=dhcp &> /dev/null
+		uci set dhcp.dhcptv.networkid="tag:dhcptv" &> /dev/null
+		uci set dhcp.dhcptv.interface="lan" &> /dev/null
+		uci set dhcp.dhcptv.start="200" &> /dev/null
+		uci set dhcp.dhcptv.limit="23" &> /dev/null
+		uci set dhcp.dhcptv.leasetime="24h" &> /dev/null
+		uci delete dhcp.dhcptv.dhcp_option &> /dev/null
+		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3" &> /dev/null
+		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222" &> /dev/null
 
 		uci commit dhcp
 		print "IPTV DHCP server configured"
