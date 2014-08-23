@@ -5,8 +5,8 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r11"
-debug=0
+version="r12"
+debug="/tmp/movistar.log"
 vlan_tagged_port="t"
 
 # Vars
@@ -34,16 +34,16 @@ deco_ipaddr=""
 dhcptv_enabled=0
 
 # Common Functions
+log() {
+	echo -e $@ >> $debug;
+}
 print() {
 	echo -e $@;
-}
-debug() {
-	if [[ $debug -gt 0 ]]; then
-		echo -e $@;
-	fi
+	log $@;
 }
 error() {
-	echo -e "Error: " "$@" 1>&2;
+	echo -e "Error: $@" 1>&2;
+	log "Error: $@";
 }
 space() {
 	print "---"
@@ -63,6 +63,7 @@ read_check_ip() {
 	done
 
 	# Return IP
+	log $ip;
 	echo $ip
 }
 read_check_yesno() {
@@ -81,6 +82,7 @@ read_check_yesno() {
 	done
 
 	# Return answer
+	log $answer;
 	if [[ $answer == "y" ]]; then
 		echo 1
 	else
@@ -118,7 +120,7 @@ netmask_cidr() {
 			192) let nbits+=2;;
 			128) let nbits+=1;;
 			0);;
-			*) echo "Error: $dec is not recognised"; exit 1
+			*) error "$dec is not recognised"; exit 1
 		esac
 	done
 	echo "$nbits"
@@ -128,7 +130,7 @@ netmask_cidr() {
 switch_detect() {
 	# Check if switch0 exists
 	switch_exists=0
-	( (swconfig dev $switch_name help) &> /dev/null ) && switch_exists=1
+	( (swconfig dev $switch_name help) >> $debug 2>&1  ) && switch_exists=1
 	if [[ $switch_exists -eq 0 ]]; then
 		error "switch couldn't be detected"
 		exit 1;
@@ -136,6 +138,7 @@ switch_detect() {
 
 	# Detect special switch configurations
 	switch_list=$(swconfig list)
+	log $switch_list
 	case $switch_list in
 		*"ag71xx-mdio"* |\
 		*"rtl8366"*)
@@ -188,6 +191,7 @@ wan_port_ask() {
 			wan_port_ask
 		fi
 	fi
+	log $switch_port_wan
 
 	# Obtain lan ports
 	for i in $(seq $switch_port_min 1 $switch_port_max)
@@ -391,69 +395,69 @@ mode_network_cfg() {
 	print "Network config erased"
 
 	# Loopback
-	ucidef_set_interface_loopback &> /dev/null
+	ucidef_set_interface_loopback >> $debug 2>&1 
 
 	# Switch config
-	ucidef_add_switch "switch0" "1" "1" &> /dev/null
-	ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port" &> /dev/null
+	ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1 
+	ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1 
 	if [[ $switch_special_wan -eq 0 ]]; then
 		if [[ $iptv_enabled -eq 1 ]]; then
-			ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+			ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1 
 		fi
 		if [[ $voip_enabled -eq 1 ]]; then
-			ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+			ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1 
 		fi
-		ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" &> /dev/null
+		ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1 
 	fi
 
 	# LAN
-	uci set network.lan="interface" &> /dev/null
-	uci set network.lan.ifname="$switch_ifname_lan.1" &> /dev/null
-	uci set network.lan.type="bridge" &> /dev/null
-	uci set network.lan.proto="static" &> /dev/null
-	uci set network.lan.ip6assign="60" &> /dev/null
+	uci set network.lan="interface" >> $debug 2>&1 
+	uci set network.lan.ifname="$switch_ifname_lan.1" >> $debug 2>&1 
+	uci set network.lan.type="bridge" >> $debug 2>&1 
+	uci set network.lan.proto="static" >> $debug 2>&1 
+	uci set network.lan.ip6assign="60" >> $debug 2>&1 
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci set network.lan.igmp_snooping="1" &> /dev/null
+		uci set network.lan.igmp_snooping="1" >> $debug 2>&1 
 		if [[ $iptv_has_alias -eq 1 ]]; then
 			tvlan_cidr=$(netmask_cidr $tvlan_netmask)
-			uci add_list network.lan.ipaddr="$tvlan_ipaddr/$tvlan_cidr" &> /dev/null
-			uci add_list network.lan.ipaddr="192.168.1.1/24" &> /dev/null
+			uci add_list network.lan.ipaddr="$tvlan_ipaddr/$tvlan_cidr" >> $debug 2>&1 
+			uci add_list network.lan.ipaddr="192.168.1.1/24" >> $debug 2>&1 
 		else
-			uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
-			uci set network.lan.netmask="255.255.255.0" &> /dev/null
+			uci set network.lan.ipaddr="192.168.1.1" >> $debug 2>&1 
+			uci set network.lan.netmask="255.255.255.0" >> $debug 2>&1 
 		fi
 	else
-		uci set network.lan.ipaddr="192.168.1.1" &> /dev/null
-		uci set network.lan.netmask="255.255.255.0" &> /dev/null
+		uci set network.lan.ipaddr="192.168.1.1" >> $debug 2>&1 
+		uci set network.lan.netmask="255.255.255.0" >> $debug 2>&1 
 	fi
 
 	# IPTV
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci set network.iptv="interface" &> /dev/null
-		uci set network.iptv.ifname="$switch_ifname_wan.2" &> /dev/null
-		uci set network.iptv.proto="static" &> /dev/null
-		uci set network.iptv.ipaddr="$iptv_ipaddr" &> /dev/null
-		uci set network.iptv.netmask="$iptv_netmask" &> /dev/null
-		uci set network.iptv.gateway="$iptv_gateway" &> /dev/null
-		uci set network.iptv.defaultroute="0" &> /dev/null
-		uci set network.iptv.peerdns="0" &> /dev/null
+		uci set network.iptv="interface" >> $debug 2>&1 
+		uci set network.iptv.ifname="$switch_ifname_wan.2" >> $debug 2>&1 
+		uci set network.iptv.proto="static" >> $debug 2>&1 
+		uci set network.iptv.ipaddr="$iptv_ipaddr" >> $debug 2>&1 
+		uci set network.iptv.netmask="$iptv_netmask" >> $debug 2>&1 
+		uci set network.iptv.gateway="$iptv_gateway" >> $debug 2>&1 
+		uci set network.iptv.defaultroute="0" >> $debug 2>&1 
+		uci set network.iptv.peerdns="0" >> $debug 2>&1 
 	fi
 
 	# VOIP
 	if [[ $voip_enabled -eq 1 ]]; then
-		uci set network.voip="interface" &> /dev/null
-		uci set network.voip.ifname="$switch_ifname_wan.3" &> /dev/null
-		uci set network.voip.proto="dhcp" &> /dev/null
-		uci set network.voip.defaultroute="0" &> /dev/null
-		uci set network.voip.peerdns="0" &> /dev/null
+		uci set network.voip="interface" >> $debug 2>&1 
+		uci set network.voip.ifname="$switch_ifname_wan.3" >> $debug 2>&1 
+		uci set network.voip.proto="dhcp" >> $debug 2>&1 
+		uci set network.voip.defaultroute="0" >> $debug 2>&1 
+		uci set network.voip.peerdns="0" >> $debug 2>&1 
 	fi
 
 	# WAN
-	uci set network.wan="interface" &> /dev/null
-	uci set network.wan.ifname="$switch_ifname_wan.6" &> /dev/null
-	uci set network.wan.proto="pppoe" &> /dev/null
-	uci set network.wan.username="adslppp@telefonicanetpa" &> /dev/null
-	uci set network.wan.password="adslppp" &> /dev/null
+	uci set network.wan="interface" >> $debug 2>&1 
+	uci set network.wan.ifname="$switch_ifname_wan.6" >> $debug 2>&1 
+	uci set network.wan.proto="pppoe" >> $debug 2>&1 
+	uci set network.wan.username="adslppp@telefonicanetpa" >> $debug 2>&1 
+	uci set network.wan.password="adslppp" >> $debug 2>&1 
 
 	# Load network config
 	print "Network config loaded"
@@ -470,23 +474,23 @@ mode_firewall_cfg() {
 
 	# IPTV Firewall
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci add firewall zone &> /dev/null
-		uci set firewall.@zone[-1].name="iptv" &> /dev/null
-		uci set firewall.@zone[-1].input="ACCEPT" &> /dev/null
-		uci set firewall.@zone[-1].output="ACCEPT" &> /dev/null
-		uci set firewall.@zone[-1].forward="REJECT" &> /dev/null
-		uci set firewall.@zone[-1].network="iptv" &> /dev/null
+		uci add firewall zone >> $debug 2>&1 
+		uci set firewall.@zone[-1].name="iptv" >> $debug 2>&1 
+		uci set firewall.@zone[-1].input="ACCEPT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].output="ACCEPT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].forward="REJECT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].network="iptv" >> $debug 2>&1 
 		if [[ $iptv_has_alias -eq 0 ]]; then
-			uci set firewall.@zone[-1].masq="1" &> /dev/null
+			uci set firewall.@zone[-1].masq="1" >> $debug 2>&1 
 		fi
 
-		uci add firewall forwarding &> /dev/null
-		uci set firewall.@forwarding[-1].src="lan" &> /dev/null
-		uci set firewall.@forwarding[-1].dest="iptv" &> /dev/null
+		uci add firewall forwarding >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].src="lan" >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].dest="iptv" >> $debug 2>&1 
 
-		uci add firewall forwarding &> /dev/null
-		uci set firewall.@forwarding[-1].src="iptv" &> /dev/null
-		uci set firewall.@forwarding[-1].dest="lan" &> /dev/null
+		uci add firewall forwarding >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].src="iptv" >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].dest="lan" >> $debug 2>&1 
 
 		if [[ $iptv_has_alias -eq 0 && $deco_enabled -eq 1 ]]; then
 			echo -e "iptables -t nat -A PREROUTING -s 172.26.0.0/16 -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
@@ -496,17 +500,17 @@ mode_firewall_cfg() {
 
 	# VOIP Firewall
 	if [[ $voip_enabled -eq 1 ]]; then
-		uci add firewall zone &> /dev/null
-		uci set firewall.@zone[-1].name="voip" &> /dev/null
-		uci set firewall.@zone[-1].input="ACCEPT" &> /dev/null
-		uci set firewall.@zone[-1].output="ACCEPT" &> /dev/null
-		uci set firewall.@zone[-1].forward="REJECT" &> /dev/null
-		uci set firewall.@zone[-1].network="voip" &> /dev/null
-		uci set firewall.@zone[-1].masq="1" &> /dev/null
+		uci add firewall zone >> $debug 2>&1 
+		uci set firewall.@zone[-1].name="voip" >> $debug 2>&1 
+		uci set firewall.@zone[-1].input="ACCEPT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].output="ACCEPT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].forward="REJECT" >> $debug 2>&1 
+		uci set firewall.@zone[-1].network="voip" >> $debug 2>&1 
+		uci set firewall.@zone[-1].masq="1" >> $debug 2>&1 
 
-		uci add firewall forwarding &> /dev/null
-		uci set firewall.@forwarding[-1].src="lan" &> /dev/null
-		uci set firewall.@forwarding[-1].dest="voip" &> /dev/null
+		uci add firewall forwarding >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].src="lan" >> $debug 2>&1 
+		uci set firewall.@forwarding[-1].dest="voip" >> $debug 2>&1 
 	fi
 
 	# Save firewall config
@@ -558,34 +562,34 @@ mode_misc_cfg() {
 
 	# DNS rebind protection
 	if [[ $iptv_enabled -eq 1 ]]; then
-		uci set dhcp.@dnsmasq[0].rebind_protection="0" &> /dev/null
+		uci set dhcp.@dnsmasq[0].rebind_protection="0" >> $debug 2>&1 
 		uci commit dhcp
 		print "DNS rebind protection disabled"
 	else
-		uci set dhcp.@dnsmasq[0].rebind_protection="1" &> /dev/null
+		uci set dhcp.@dnsmasq[0].rebind_protection="1" >> $debug 2>&1 
 		uci commit dhcp
 		print "DNS rebind protection enabled"
 	fi
 
 	# DHCP
 	if [[ $dhcptv_enabled -eq 1 ]]; then
-		uci set dhcp.lan.networkid="tag:!dhcptv" &> /dev/null
-		uci set dhcp.lan.start="100" &> /dev/null
-		uci set dhcp.lan.limit="100" &> /dev/null
+		uci set dhcp.lan.networkid="tag:!dhcptv" >> $debug 2>&1 
+		uci set dhcp.lan.start="100" >> $debug 2>&1 
+		uci set dhcp.lan.limit="100" >> $debug 2>&1 
 
-		uci set dhcp.vendortv=vendorclass &> /dev/null
-		uci set dhcp.vendortv.vendorclass="IAL" &> /dev/null
-		uci set dhcp.vendortv.networkid="dhcptv" &> /dev/null
+		uci set dhcp.vendortv=vendorclass >> $debug 2>&1 
+		uci set dhcp.vendortv.vendorclass="IAL" >> $debug 2>&1 
+		uci set dhcp.vendortv.networkid="dhcptv" >> $debug 2>&1 
 
-		uci set dhcp.dhcptv=dhcp &> /dev/null
-		uci set dhcp.dhcptv.networkid="tag:dhcptv" &> /dev/null
-		uci set dhcp.dhcptv.interface="lan" &> /dev/null
-		uci set dhcp.dhcptv.start="200" &> /dev/null
-		uci set dhcp.dhcptv.limit="23" &> /dev/null
-		uci set dhcp.dhcptv.leasetime="24h" &> /dev/null
-		uci delete dhcp.dhcptv.dhcp_option &> /dev/null
-		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3" &> /dev/null
-		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222" &> /dev/null
+		uci set dhcp.dhcptv=dhcp >> $debug 2>&1 
+		uci set dhcp.dhcptv.networkid="tag:dhcptv" >> $debug 2>&1 
+		uci set dhcp.dhcptv.interface="lan" >> $debug 2>&1 
+		uci set dhcp.dhcptv.start="200" >> $debug 2>&1 
+		uci set dhcp.dhcptv.limit="23" >> $debug 2>&1 
+		uci set dhcp.dhcptv.leasetime="24h" >> $debug 2>&1 
+		uci delete dhcp.dhcptv.dhcp_option >> $debug 2>&1 
+		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3" >> $debug 2>&1 
+		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222" >> $debug 2>&1 
 
 		uci commit dhcp
 		print "IPTV DHCP server configured"
@@ -594,6 +598,9 @@ mode_misc_cfg() {
 
 # Main fun
 main() {
+	# Print CPU info
+	cat /proc/cpuinfo &> $debug
+
 	# Print script info
 	print "Movistar Imagenio Configuration Script $version"
 	print "$DISTRIB_DESCRIPTION ($DISTRIB_TARGET)"
