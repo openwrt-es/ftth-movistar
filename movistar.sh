@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r12"
+version="r13"
 debug="/tmp/movistar.log"
 vlan_tagged_port="t"
 
@@ -32,6 +32,7 @@ tvlan_netmask=""
 deco_enabled=0
 deco_ipaddr=""
 dhcptv_enabled=0
+network="192.168.1.0"
 
 # Common Functions
 log() {
@@ -207,6 +208,16 @@ wan_port_ask() {
 		fi
 	done
 }
+network_ask() {
+	print "You want to customize your network (${network} is default net)?(y/n)"
+	network_custom=$(read_check_yesno)
+	# Only need the network part, then when take only take the firts 3 octects
+	if [[ $network_custom -eq 1 ]]; then
+		network=$(echo $(read_check_ip)|cut -d"." -f-3)
+	else
+		network=$(echo ${network}|cut -d"." -f-3)
+	fi
+}
 enabled_configs_print() {
 	# Print configuration mode
 	local configs_enabled="WAN"
@@ -282,7 +293,7 @@ mode_ask() {
 set_bird4() {
 	echo -e "log syslog all;" > $1
 	echo -e "" >> $1
-	echo -e "router id 192.168.1.1;" >> $1
+	echo -e "router id ${network}.1;" >> $1
 	echo -e "" >> $1
 	echo -e "protocol kernel {" >> $1
 	echo -e "\tpersist;" >> $1
@@ -341,7 +352,7 @@ set_igmpproxy() {
 	echo -e "option network $switch_ifname_wan.2" >> $1
 	echo -e "option direction upstream" >> $1
 	echo -e "list altnet 172.26.0.0/16" >> $1
-	echo -e "list altnet 192.168.1.0/24" >> $1
+	echo -e "list altnet ${network}.0/24" >> $1
 	echo -e "" >> $1
 	echo -e "config phyint" >> $1
 	echo -e "option network br-lan" >> $1
@@ -421,13 +432,13 @@ mode_network_cfg() {
 		if [[ $iptv_has_alias -eq 1 ]]; then
 			tvlan_cidr=$(netmask_cidr $tvlan_netmask)
 			uci add_list network.lan.ipaddr="$tvlan_ipaddr/$tvlan_cidr" >> $debug 2>&1 
-			uci add_list network.lan.ipaddr="192.168.1.1/24" >> $debug 2>&1 
+			uci add_list network.lan.ipaddr="${network}.1/24" >> $debug 2>&1 
 		else
-			uci set network.lan.ipaddr="192.168.1.1" >> $debug 2>&1 
+			uci set network.lan.ipaddr="${network}.1" >> $debug 2>&1 
 			uci set network.lan.netmask="255.255.255.0" >> $debug 2>&1 
 		fi
 	else
-		uci set network.lan.ipaddr="192.168.1.1" >> $debug 2>&1 
+		uci set network.lan.ipaddr="${network}.1" >> $debug 2>&1 
 		uci set network.lan.netmask="255.255.255.0" >> $debug 2>&1 
 	fi
 
@@ -639,6 +650,9 @@ main() {
 	print "\tSwitch LAN Ports: $switch_port_lan"
 
 	space
+
+	# Ask for network
+	network_ask
 
 	# Ask for configuration mode
 	mode_ask
