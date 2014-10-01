@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r12"
+version="r13"
 debug="/tmp/movistar.log"
 vlan_tagged_port="t"
 
@@ -212,7 +212,7 @@ network_ask() {
 	print "You want to customize your network (${network} is default net)?(y/n)"
 	network_custom=$(read_check_yesno)
 	# Only need the network part, then when take only take the firts 3 octects
-	if [[ $network_custom -eq 0 ]]; then
+	if [[ $network_custom -eq 1 ]]; then
 		network=$(echo $(read_check_ip)|cut -d"." -f-3)
 	else
 		network=$(echo ${network}|cut -d"." -f-3)
