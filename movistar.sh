@@ -5,14 +5,18 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r13"
+version="r14"
 debug="/tmp/movistar.log"
 vlan_tagged_port="t"
 
 # Vars
-switch_ifname_lan="eth0"
-switch_ifname_wan="eth0"
-switch_special_wan=0
+switch_ifname_lan="eth0.1"
+switch_ifname_iptv="eth0.2"
+switch_ifname_voip="eth0.3"
+switch_ifname_wan="eth0.6"
+switch_wan_eth1=0
+router=""
+router_detected=0
 switch_name="switch0"
 switch_port_min=0
 switch_port_max=0
@@ -151,6 +155,29 @@ netmask_cidr() {
 }
 
 # Funs
+router_detect() {
+	if [ -f "/tmp/sysinfo/board_name" ]; then
+		router=$(cat /tmp/sysinfo/board_name)
+	else
+		case $DISTRIB_TARGET in
+			"brcm63xx"*)
+				router=$(awk 'BEGIN{FS="[ \t:/]+"} /system type/ {print $4}' /proc/cpuinfo)
+				;;
+		esac
+	fi
+
+	case $router in
+		"96369R-1231N" |\
+		"archer-c5" |\
+		"archer-c7" |\
+		"tl-wdr4300" |\
+		"tl-wdr4900-v2" |\
+		"tl-wr1043nd" |\
+		"tl-wr1043nd-v2")
+			router_detected=1
+			;;
+	esac
+}
 switch_detect() {
 	# Check if switch0 exists
 	switch_exists=0
@@ -167,8 +194,7 @@ switch_detect() {
 		*"ag71xx-mdio"* |\
 		*"rtl8366"*)
 			if [ -d "/sys/class/net/eth1" ]; then
-				switch_special_wan=1
-				switch_ifname_wan="eth1"
+				switch_wan_eth1=1
 			fi
 			;;
 	esac
@@ -190,30 +216,37 @@ switch_detect() {
 	done
 }
 wan_port_ask() {
-	if [ $switch_special_wan -eq 1 ]; then
-		print "Your WAN interface has been detected as $switch_ifname_wan."
+	if [ $switch_wan_eth1 -eq 1 ]; then
+		print "Your WAN interface has been detected as eth1."
 		print "Is this correct? (y/n)"
-		switch_special_wan=$(read_check_yesno)
+		switch_wan_eth1=$(read_check_yesno)
 
-		if [ $switch_special_wan -eq 0 ]; then
-			switch_ifname_wan="eth0"
+		if [ $switch_wan_eth1 -eq 1 ]; then
+			switch_ifname_iptv="eth1.2"
+			switch_ifname_voip="eth1.3"
+			switch_ifname_wan="eth1.6"
 		fi
 	fi
 
-	if [ $switch_special_wan -eq 0 ]; then
+	if [ $switch_wan_eth1 -eq 0 ]; then
 		# Print wan port info
 		print "Please specify WAN port number"
-		read switch_port_wan
 
-		# Check port
-		if [ $switch_port_wan -lt $switch_port_min ] || [ $switch_port_wan -gt $switch_port_max ]; then
-			error "Invalid WAN port: valid range [$switch_port_list]"
-			wan_port_ask
-		fi
-		if [ $switch_port_wan -eq $switch_port_cpu ]; then
-			error "Invalid WAN port: matches CPU port"
-			wan_port_ask
-		fi
+		# Get valid wan port
+		local switch_port_wan_valid=0
+		while [ $switch_port_wan_valid -eq 0 ]
+		do
+			read switch_port_wan
+
+			# Check wan port
+			if [ $switch_port_wan -lt $switch_port_min ] || [ $switch_port_wan -gt $switch_port_max ]; then
+				error "Invalid WAN port: valid range [$switch_port_list]"
+			elif [ $switch_port_wan -eq $switch_port_cpu ]; then
+				error "Invalid WAN port: matches CPU port"
+			else
+				switch_port_wan_valid=1
+			fi
+		done
 	fi
 	log $switch_port_wan
 
@@ -271,20 +304,28 @@ mode_ask() {
 	# Ask for IPTV configuration
 	if [ $iptv_enabled -eq 1 ]; then
 		print "IPTV IP Address (e.g 172.26.0.2/10.128.0.2)"
-		iptv_ipaddr=$(read_check_ip)
 
-		case $iptv_ipaddr in
-			"10."*)
-				iptv_has_alias=0
-				;;
-			"172."*)
-				iptv_has_alias=1
-				;;
-			*)
-				error "Unsupported IPTV IP address"
-				mode_ask
-				;;
-		esac
+		# Get valid ip
+		local iptv_ipaddr_valid=0
+		while [ $iptv_ipaddr_valid -eq 0 ]
+		do
+			iptv_ipaddr=$(read_check_ip)
+
+			# Check ip
+			case $iptv_ipaddr in
+				"10."*)
+					iptv_ipaddr_valid=1
+					iptv_has_alias=0
+					;;
+				"172."*)
+					iptv_ipaddr_valid=1
+					iptv_has_alias=1
+					;;
+				*)
+					error "Unsupported IPTV IP address"
+					;;
+			esac
+		done
 
 		print "IPTV Netmask (e.g. 255.255.240.0/255.128.0.0)"
 		iptv_netmask=$(read_check_ip)
@@ -343,6 +384,8 @@ set_bird4() {
 	echo -e "\tscan time 10;" >> $1
 	echo -e "}" >> $1
 	echo -e "" >> $1
+
+	# Static
 	echo -e "protocol static {" >> $1
 	if [ $iptv_enabled -eq 1 ] && [ $iptv_has_alias -eq 0 ]; then
 		echo -e "\texport all;" >> $1
@@ -362,7 +405,7 @@ set_bird4() {
 		echo -e "protocol rip voip {" >> $1
 		echo -e "\timport all;" >> $1
 		echo -e "\texport filter voip_filter;" >> $1
-		echo -e "\tinterface \"$switch_ifname_wan.3\";" >> $1
+		echo -e "\tinterface \"$switch_ifname_voip\";" >> $1
 		echo -e "}" >> $1
 		echo -e "" >> $1
 	fi
@@ -376,7 +419,7 @@ set_bird4() {
 		echo -e "protocol rip iptv {" >> $1
 		echo -e "\timport all;" >> $1
 		echo -e "\texport filter iptv_filter;" >> $1
-		echo -e "\tinterface \"$switch_ifname_wan.2\";" >> $1
+		echo -e "\tinterface \"$switch_ifname_iptv\";" >> $1
 		echo -e "}" >> $1
 		echo -e "" >> $1
 	fi
@@ -405,7 +448,7 @@ set_mcproxy() {
 	echo -e "protocol IGMPv2;" >> $1
 	echo -e "" >> $1
 	echo -e "# Proxy Instance: upstream ==> downstream" >> $1
-	echo -e "pinstance iptv: \"$switch_ifname_wan.2\" ==> \"br-lan\";" >> $1
+	echo -e "pinstance iptv: \"$switch_ifname_iptv\" ==> \"br-lan\";" >> $1
 	echo -e "" >> $1
 }
 set_firewall_user() {
@@ -453,21 +496,88 @@ mode_network_cfg() {
 	ucidef_set_interface_loopback >> $debug 2>&1
 
 	# Switch config
-	ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
-	ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
-	if [ $switch_special_wan -eq 0 ]; then
-		if [ $iptv_enabled -eq 1 ]; then
-			ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
+	if [ $router_detected -eq 1 ]; then
+		case $router in
+			"96369R-1231N")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 5$vlan_tagged_port" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "4$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "4$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "4$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				;;
+			"archer-c5" |\
+			"archer-c7" |\
+			"tl-wdr4900-v2")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				switch_ifname_lan="eth0"
+				ucidef_add_switch_vlan "switch0" "1" "0 2 3 4 5" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					switch_ifname_iptv="eth1.2"
+					ucidef_add_switch_vlan "switch0" "2" "1$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					switch_ifname_voip="eth1.3"
+					ucidef_add_switch_vlan "switch0" "3" "1$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				fi
+				switch_ifname_wan="eth1.6"
+				ucidef_add_switch_vlan "switch0" "6" "1$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				;;
+			"tl-wdr4300")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0$vlan_tagged_port 2 3 4 5" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "0$vlan_tagged_port 1$vlan_tagged_port" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "0$vlan_tagged_port 1$vlan_tagged_port" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "0$vlan_tagged_port 1$vlan_tagged_port" >> $debug 2>&1
+				;;
+			"tl-wr1043nd")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "1 2 3 4 5$vlan_tagged_port" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "0$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "0$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "0$vlan_tagged_port 5$vlan_tagged_port" >> $debug 2>&1
+				;;
+			"tl-wr1043nd-v2")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				switch_ifname_lan="eth1"
+				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 4" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "5$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "5$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "5$vlan_tagged_port 6$vlan_tagged_port" >> $debug 2>&1
+				;;
+		esac
+	else
+		ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+		ucidef_add_switch_vlan "switch0" "1" "$switch_port_lan $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
+		if [ $switch_wan_eth1 -eq 0 ]; then
+			if [ $iptv_enabled -eq 1 ]; then
+				ucidef_add_switch_vlan "switch0" "2" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
+			fi
+			if [ $voip_enabled -eq 1 ]; then
+				ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
+			fi
+			ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
 		fi
-		if [ $voip_enabled -eq 1 ]; then
-			ucidef_add_switch_vlan "switch0" "3" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
-		fi
-		ucidef_add_switch_vlan "switch0" "6" "$switch_port_wan$vlan_tagged_port $switch_port_cpu$vlan_tagged_port" >> $debug 2>&1
 	fi
 
 	# LAN
 	uci set network.lan="interface" >> $debug 2>&1
-	uci set network.lan.ifname="$switch_ifname_lan.1" >> $debug 2>&1
+	uci set network.lan.ifname="$switch_ifname_lan" >> $debug 2>&1
 	uci set network.lan.type="bridge" >> $debug 2>&1
 	uci set network.lan.proto="static" >> $debug 2>&1
 	uci set network.lan.ip6assign="60" >> $debug 2>&1
@@ -489,7 +599,7 @@ mode_network_cfg() {
 	# IPTV
 	if [ $iptv_enabled -eq 1 ]; then
 		uci set network.iptv="interface" >> $debug 2>&1
-		uci set network.iptv.ifname="$switch_ifname_wan.2" >> $debug 2>&1
+		uci set network.iptv.ifname="$switch_ifname_iptv" >> $debug 2>&1
 		uci set network.iptv.proto="static" >> $debug 2>&1
 		uci set network.iptv.ipaddr="$iptv_ipaddr" >> $debug 2>&1
 		uci set network.iptv.netmask="$iptv_netmask" >> $debug 2>&1
@@ -501,7 +611,7 @@ mode_network_cfg() {
 	# VOIP
 	if [ $voip_enabled -eq 1 ]; then
 		uci set network.voip="interface" >> $debug 2>&1
-		uci set network.voip.ifname="$switch_ifname_wan.3" >> $debug 2>&1
+		uci set network.voip.ifname="$switch_ifname_voip" >> $debug 2>&1
 		uci set network.voip.proto="dhcp" >> $debug 2>&1
 		uci set network.voip.defaultroute="0" >> $debug 2>&1
 		uci set network.voip.peerdns="0" >> $debug 2>&1
@@ -509,7 +619,7 @@ mode_network_cfg() {
 
 	# WAN
 	uci set network.wan="interface" >> $debug 2>&1
-	uci set network.wan.ifname="$switch_ifname_wan.6" >> $debug 2>&1
+	uci set network.wan.ifname="$switch_ifname_wan" >> $debug 2>&1
 	uci set network.wan.proto="pppoe" >> $debug 2>&1
 	uci set network.wan.username="adslppp@telefonicanetpa" >> $debug 2>&1
 	uci set network.wan.password="adslppp" >> $debug 2>&1
@@ -638,7 +748,7 @@ mode_misc_cfg() {
 		uci set udpxy.iptv.verbose="0" >> $debug 2>&1
 		uci set udpxy.iptv.status="1" >> $debug 2>&1
 		uci set udpxy.iptv.port="$udpxy_port" >> $debug 2>&1
-		uci set udpxy.iptv.source="eth0.2" >> $debug 2>&1
+		uci set udpxy.iptv.source="$switch_ifname_iptv" >> $debug 2>&1
 		uci commit udpxy >> $debug 2>&1
 		print "udpxy config applied"
 	fi
@@ -681,35 +791,41 @@ main() {
 
 	space
 
-	# Detect switch
-	switch_detect
-	print "Switch Info"
-	print "\tSwitch Ports: $switch_port_num [$switch_port_list]"
-	print "\tSwitch CPU Port: $switch_port_cpu"
-	if [ $switch_special_wan -eq 0 ]; then
-		print "\tSwitch WAN Port: Unknown"
+	router_detect
+
+	if [ $router_detected -eq 0 ]; then
+		# Detect switch
+		switch_detect
+		print "Switch Info"
+		print "\tSwitch Ports: $switch_port_num [$switch_port_list]"
+		print "\tSwitch CPU Port: $switch_port_cpu"
+		if [ $switch_wan_eth1 -eq 0 ]; then
+			print "\tSwitch WAN Port: Unknown"
+		else
+			print "\tSwitch WAN Interface: eth1"
+		fi
+		print "\tSwitch LAN Ports: Unknown"
+
+		space
+
+		# Ask for wan port number
+		wan_port_ask
+
+		space
+
+		# Print switch info
+		print "Switch Info"
+		print "\tSwitch Ports: $switch_port_num [$switch_port_list]"
+		print "\tSwitch CPU Port: $switch_port_cpu"
+		if [ $switch_wan_eth1 -eq 0 ]; then
+			print "\tSwitch WAN Port: $switch_port_wan"
+		else
+			print "\tSwitch WAN Interface: eth1"
+		fi
+		print "\tSwitch LAN Ports: $switch_port_lan"
 	else
-		print "\tSwitch WAN Interface: $switch_ifname_wan"
+		print "Router identified: $router"
 	fi
-	print "\tSwitch LAN Ports: Unknown"
-
-	space
-
-	# Ask for wan port number
-	wan_port_ask
-
-	space
-
-	# Print switch info
-	print "Switch Info"
-	print "\tSwitch Ports: $switch_port_num [$switch_port_list]"
-	print "\tSwitch CPU Port: $switch_port_cpu"
-	if [ $switch_special_wan -eq 0 ]; then
-		print "\tSwitch WAN Port: $switch_port_wan"
-	else
-		print "\tSwitch WAN Interface: $switch_ifname_wan"
-	fi
-	print "\tSwitch LAN Ports: $switch_port_lan"
 
 	space
 
