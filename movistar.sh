@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r16"
+version="r17"
 debug="/tmp/movistar.log"
 debug_persistent="/etc/movistar.log"
 
@@ -18,10 +18,6 @@ switch_wan_eth1=0
 router=""
 router_detected=0
 switch_name="switch0"
-switch_port_min=0
-switch_port_max=0
-switch_port_list=""
-switch_port_num=0
 switch_port_cpu=-1
 switch_port_wan=-1
 switch_port_lan=""
@@ -37,8 +33,6 @@ iptv_has_alias=0
 tvlan_ipaddr=""
 tvlan_netmask=""
 tvlan_cidr=0
-deco_enabled=0
-deco_ipaddr=""
 dhcptv_enabled=0
 udpxy_config=0
 udpxy_port=4022
@@ -157,8 +151,13 @@ netmask_cidr() {
 
 # Funs
 switch_detect() {
+	local switch_port_min=0
+	local switch_port_max=0
+	local switch_port_list=""
+	local switch_port_num=0
+	local switch_exists=0
+
 	# Check if switch exists
-	switch_exists=0
 	( (swconfig dev $switch_name help) >> $debug 2>&1 ) && switch_exists=1
 	if [ $switch_exists -eq 0 ]; then
 		error "switch couldn't be detected"
@@ -378,14 +377,7 @@ mode_ask() {
 			if [ -f /lib/modules/*/nf_nat_rtsp.ko ] && [ -f /lib/modules/*/nf_conntrack_rtsp.ko ]; then
 				print "nf_conntrack_rtsp module detected"
 			else
-				print "Enable VOD for one IPTV decoder? (y/n)"
-				print "Please install nf_conntrack_rtsp module for more IPTV decoders"
-				deco_enabled=$(read_check_yesno)
-
-				if [ $deco_enabled -eq 1 ]; then
-					print "VOD IPTV decoder LAN IP addr? (e.g. 192.168.1.200)"
-					deco_ipaddr=$(read_check_ip)
-				fi
+				print "Please install nf_conntrack_rtsp module IPTV decoders (VOD)"
 			fi
 
 			print "Enable DHCP for IPTV decoders? (y/n)"
@@ -418,10 +410,10 @@ log_persistent() {
 
 set_bird4() {
 	# General
-	cat << EOT > $1
+	cat << EOF > $1
 log syslog all;
 
-router id $lan_ipaddr;
+router id ${lan_ipaddr};
 
 protocol kernel {
 	persist;
@@ -434,29 +426,15 @@ protocol device {
 	scan time 10;
 }
 
-EOT
-
-	# Static
-	if [ $iptv_enabled -eq 1 ] && [ $iptv_has_alias -eq 0 ]; then
-		cat << EOT >> $1
-protocol static {
-	export all;
-	route 172.26.0.0/16 via $iptv_gateway;
-}
-
-EOT
-	else
-		cat << EOT >> $1
 protocol static {
 	export none;
 }
 
-EOT
-	fi
+EOF
 
 	# VOIP RIPv2
 	if [ $voip_enabled -eq 1 ]; then
-		cat << EOT >> $1
+		cat << EOF >> $1
 filter voip_filter {
 	if net ~ 10.0.0.0/8 then accept;
 	else reject;
@@ -464,15 +442,15 @@ filter voip_filter {
 protocol rip voip {
 	import all;
 	export filter voip_filter;
-	interface "$switch_ifname_voip";
+	interface "${switch_ifname_voip}";
 }
 
-EOT
+EOF
 	fi
 
 	# IPTV RIPv2
 	if [ $iptv_enabled -eq 1 ]; then
-		cat << EOT >> $1
+		cat << EOF >> $1
 filter iptv_filter {
 	if net ~ 172.26.0.0/16 then accept;
 	else reject;
@@ -480,96 +458,16 @@ filter iptv_filter {
 protocol rip iptv {
 	import all;
 	export filter iptv_filter;
-	interface "$switch_ifname_iptv";
+	interface "${switch_ifname_iptv}";
 }
 
-EOT
+EOF
 	fi
-}
-set_igmpproxy() {
-	cat << EOT > $1
-config igmpproxy
-option quickleave 1
-
-config phyint
-option network iptv
-option direction upstream
-list altnet 172.26.0.0/16
-list altnet $lan_ipaddr/$lan_cidr
-
-config phyint
-option network lan
-option direction downstream
-
-EOT
-}
-set_mcproxy() {
-	cat << EOT > $1
-######################################
-##-- mcproxy configuration script --##
-######################################
-
-# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)
-protocol IGMPv2;
-
-# Proxy Instance: upstream ==> downstream
-pinstance iptv: "$switch_ifname_iptv" ==> "br-lan";
-
-EOT
-}
-set_firewall_user() {
-	cat << EOT > $1
-# This file is interpreted as shell script.
-# Put your custom iptables rules here, they will
-# be executed with each firewall (re-)start.
-
-# Internal uci firewall chains are flushed and recreated on reload, so
-# put custom rules into the root chains e.g. INPUT or FORWARD or into the
-# special user chains, e.g. input_wan_rule or postrouting_lan_rule.
-
-EOT
-}
-set_firewall_extras() {
-	if [ -f /usr/share/miniupnpd/firewall.include ]; then
-		uci set firewall.miniupnpd=include
-		uci set firewall.miniupnpd.type="script"
-		uci set firewall.miniupnpd.path="/usr/share/miniupnpd/firewall.include"
-		uci set firewall.miniupnpd.family="any"
-		uci set firewall.miniupnpd.reload="1"
-	fi
-
-	if [ $udpxy_wan -eq 1 ]; then
-		uci set firewall.udpxy=rule
-		uci set firewall.udpxy.target="ACCEPT"
-		uci set firewall.udpxy.src="wan"
-		uci set firewall.udpxy.proto="tcp udp"
-		uci set firewall.udpxy.dest_port="$udpxy_port"
-		uci set firewall.udpxy.name="udpxy"
-	fi
-}
-
-igmpproxy_workaround_enable() {
-	cat << EOT > /etc/rc.local
-# Put your custom commands here that should be executed once
-# the system init finished. By default this file does nothing.
-
-sleep 5 && /etc/init.d/igmpproxy start &
-
-exit 0
-
-EOT
-}
-igmpproxy_workaround_disable() {
-	cat << EOT > /etc/rc.local
-# Put your custom commands here that should be executed once
-# the system init finished. By default this file does nothing.
-
-exit 0
-
-EOT
 }
 
 mode_network_cfg() {
+	local ula_prefix="$(uci -q get network.globals.ula_prefix)"
+
 	# Erase network config
 	rm -f /etc/config/network >> $debug 2>&1
 	touch /etc/config/network >> $debug 2>&1
@@ -577,6 +475,15 @@ mode_network_cfg() {
 
 	# Loopback
 	ucidef_set_interface_loopback >> $debug 2>&1
+
+	# ULA
+	if [ -z $ula_prefix ] || [ "$ula_prefix" == "auto" ]; then
+		local r1=$(dd if=/dev/urandom bs=1 count=1 2> /dev/null | hexdump -e '1/1 "%02x"')
+		local r2=$(dd if=/dev/urandom bs=2 count=1 2> /dev/null | hexdump -e '2/1 "%02x"')
+		local r3=$(dd if=/dev/urandom bs=2 count=1 2> /dev/null | hexdump -e '2/1 "%02x"')
+		ula_prefix="fd${r1}:${r2}:${r3}::/48"
+	fi
+	uci set network.globals.ula_prefix="$ula_prefix" >> $debug 2>&1
 
 	# Switch config
 	if [ $router_detected -eq 1 ]; then
@@ -655,52 +562,79 @@ mode_network_cfg() {
 	fi
 
 	# LAN
-	uci set network.lan="interface" >> $debug 2>&1
-	uci set network.lan.ifname="$switch_ifname_lan" >> $debug 2>&1
-	uci set network.lan.type="bridge" >> $debug 2>&1
-	uci set network.lan.proto="static" >> $debug 2>&1
-	uci set network.lan.ip6assign="60" >> $debug 2>&1
+	uci batch >> $debug 2>&1 << EOF
+set network.lan="interface"
+set network.lan.ifname="${switch_ifname_lan}"
+set network.lan.type="bridge"
+set network.lan.proto="static"
+set network.lan.ip6assign="60"
+EOF
+
 	if [ $iptv_enabled -eq 1 ]; then
 		uci set network.lan.igmp_snooping="1" >> $debug 2>&1
-		if [ $iptv_has_alias -eq 1 ]; then
-			uci add_list network.lan.ipaddr="$tvlan_ipaddr/$tvlan_cidr" >> $debug 2>&1
-			uci add_list network.lan.ipaddr="$lan_ipaddr/$lan_cidr" >> $debug 2>&1
-		else
-			uci set network.lan.ipaddr="$lan_ipaddr" >> $debug 2>&1
-			uci set network.lan.netmask="$lan_netmask" >> $debug 2>&1
-		fi
+	fi
+
+	if [ $iptv_enabled -eq 1 ] && [ $iptv_has_alias -eq 1 ]; then
+		uci batch >> $debug 2>&1 << EOF
+add_list network.lan.ipaddr="${tvlan_ipaddr}/${tvlan_cidr}"
+add_list network.lan.ipaddr="${lan_ipaddr}/${lan_cidr}"
+EOF
 	else
-		uci set network.lan.ipaddr="$lan_ipaddr" >> $debug 2>&1
-		uci set network.lan.netmask="$lan_netmask" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set network.lan.ipaddr="${lan_ipaddr}"
+set network.lan.netmask="${lan_netmask}"
+EOF
 	fi
 
 	# IPTV
 	if [ $iptv_enabled -eq 1 ]; then
-		uci set network.iptv="interface" >> $debug 2>&1
-		uci set network.iptv.ifname="$switch_ifname_iptv" >> $debug 2>&1
-		uci set network.iptv.proto="static" >> $debug 2>&1
-		uci set network.iptv.ipaddr="$iptv_ipaddr" >> $debug 2>&1
-		uci set network.iptv.netmask="$iptv_netmask" >> $debug 2>&1
-		uci set network.iptv.gateway="$iptv_gateway" >> $debug 2>&1
-		uci set network.iptv.defaultroute="0" >> $debug 2>&1
-		uci set network.iptv.peerdns="0" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set network.iptv="interface"
+set network.iptv.ifname="${switch_ifname_iptv}"
+set network.iptv.proto="static"
+set network.iptv.ipaddr="${iptv_ipaddr}"
+set network.iptv.netmask="${iptv_netmask}"
+set network.iptv.gateway="${iptv_gateway}"
+set network.iptv.defaultroute="0"
+set network.iptv.peerdns="0"
+EOF
 	fi
 
 	# VOIP
 	if [ $voip_enabled -eq 1 ]; then
-		uci set network.voip="interface" >> $debug 2>&1
-		uci set network.voip.ifname="$switch_ifname_voip" >> $debug 2>&1
-		uci set network.voip.proto="dhcp" >> $debug 2>&1
-		uci set network.voip.defaultroute="0" >> $debug 2>&1
-		uci set network.voip.peerdns="0" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set network.voip="interface"
+set network.voip.ifname="${switch_ifname_voip}"
+set network.voip.proto="dhcp"
+set network.voip.defaultroute="0"
+set network.voip.peerdns="0"
+EOF
 	fi
 
 	# WAN
-	uci set network.wan="interface" >> $debug 2>&1
-	uci set network.wan.ifname="$switch_ifname_wan" >> $debug 2>&1
-	uci set network.wan.proto="pppoe" >> $debug 2>&1
-	uci set network.wan.username="adslppp@telefonicanetpa" >> $debug 2>&1
-	uci set network.wan.password="adslppp" >> $debug 2>&1
+	uci batch >> $debug 2>&1 << EOF
+set network.wan="interface"
+set network.wan.ifname="${switch_ifname_wan}"
+set network.wan.proto="pppoe"
+set network.wan.username="adslppp@telefonicanetpa"
+set network.wan.password="adslppp"
+set network.wan.ipv6="1"
+
+set network.wan6="interface"
+set network.wan6.ifname="wan"
+set network.wan6.proto="dhcpv6"
+EOF
+
+	# IPTV route
+	if [ $iptv_enabled -eq 1 ]; then
+		uci batch >> $debug 2>&1 << EOF
+add network route
+set network.@route[-1].interface="iptv" 
+set network.@route[-1].target="172.26.0.0"
+set network.@route[-1].netmask="255.255.0.0"
+set network.@route[-1].gateway="${iptv_gateway}"
+EOF
+	fi
 
 	# Load network config
 	print "Network config loaded"
@@ -711,54 +645,101 @@ mode_network_cfg() {
 }
 mode_firewall_cfg() {
 	# Firewall default config
-	rm -f /etc/config/firewall >> $debug 2>&1
-	cp /rom/etc/config/firewall /etc/config >> $debug 2>&1
-	set_firewall_user "/etc/firewall.user"
+	local firewall_forwarding=0
+	while [ $firewall_forwarding -eq 0 ]
+	do
+		uci delete firewall.@forwarding[0] >> $debug 2>&1
+		firewall_forwarding=$?
+	done
+	local firewall_zone=0
+	while [ $firewall_zone -eq 0 ]
+	do
+		uci delete firewall.@zone[0] >> $debug 2>&1
+		firewall_zone=$?
+	done
+
+	# WAN Firewall
+	uci batch >> $debug 2>&1 << EOF
+add firewall zone
+set firewall.@zone[-1].name="lan"
+set firewall.@zone[-1].input="ACCEPT"
+set firewall.@zone[-1].output="ACCEPT"
+set firewall.@zone[-1].forward="ACCEPT"
+set firewall.@zone[-1].network="lan"
+
+add firewall zone
+set firewall.@zone[-1].name="wan"
+set firewall.@zone[-1].input="REJECT"
+set firewall.@zone[-1].output="ACCEPT"
+set firewall.@zone[-1].forward="REJECT"
+set firewall.@zone[-1].masq="1"
+set firewall.@zone[-1].mtu_fix="1"
+add_list firewall.@zone[-1].network="wan"
+add_list firewall.@zone[-1].network="wan6"
+
+add firewall forwarding
+set firewall.@forwarding[-1].src="lan"
+set firewall.@forwarding[-1].dest="wan"
+EOF
 
 	# IPTV Firewall
 	if [ $iptv_enabled -eq 1 ]; then
-		uci add firewall zone >> $debug 2>&1
-		uci set firewall.@zone[-1].name="iptv" >> $debug 2>&1
-		uci set firewall.@zone[-1].input="ACCEPT" >> $debug 2>&1
-		uci set firewall.@zone[-1].output="ACCEPT" >> $debug 2>&1
-		uci set firewall.@zone[-1].forward="REJECT" >> $debug 2>&1
-		uci set firewall.@zone[-1].network="iptv" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+add firewall zone
+set firewall.@zone[-1].name="iptv"
+set firewall.@zone[-1].input="ACCEPT"
+set firewall.@zone[-1].output="ACCEPT"
+set firewall.@zone[-1].forward="REJECT"
+set firewall.@zone[-1].network="iptv"
+EOF
+
 		if [ $iptv_has_alias -eq 0 ]; then
 			uci set firewall.@zone[-1].masq="1" >> $debug 2>&1
 		fi
 
-		uci add firewall forwarding >> $debug 2>&1
-		uci set firewall.@forwarding[-1].src="lan" >> $debug 2>&1
-		uci set firewall.@forwarding[-1].dest="iptv" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+add firewall forwarding
+set firewall.@forwarding[-1].src="lan"
+set firewall.@forwarding[-1].dest="iptv"
 
-		uci add firewall forwarding >> $debug 2>&1
-		uci set firewall.@forwarding[-1].src="iptv" >> $debug 2>&1
-		uci set firewall.@forwarding[-1].dest="lan" >> $debug 2>&1
-
-		if [ $iptv_has_alias -eq 0 ] && [ $deco_enabled -eq 1 ]; then
-			echo -e "iptables -t nat -A PREROUTING -s 172.26.0.0/16 -p udp -d $iptv_ipaddr -j DNAT --to-destination $deco_ipaddr" >> "/etc/firewall.user"
-			echo -e "" >> "/etc/firewall.user"
-		fi
+add firewall forwarding
+set firewall.@forwarding[-1].src="iptv"
+set firewall.@forwarding[-1].dest="lan"
+EOF
 	fi
 
 	# VOIP Firewall
 	if [ $voip_enabled -eq 1 ]; then
-		uci add firewall zone >> $debug 2>&1
-		uci set firewall.@zone[-1].name="voip" >> $debug 2>&1
-		uci set firewall.@zone[-1].input="ACCEPT" >> $debug 2>&1
-		uci set firewall.@zone[-1].output="ACCEPT" >> $debug 2>&1
-		uci set firewall.@zone[-1].forward="REJECT" >> $debug 2>&1
-		uci set firewall.@zone[-1].network="voip" >> $debug 2>&1
-		uci set firewall.@zone[-1].masq="1" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+add firewall zone
+set firewall.@zone[-1].name="voip"
+set firewall.@zone[-1].input="ACCEPT"
+set firewall.@zone[-1].output="ACCEPT"
+set firewall.@zone[-1].forward="REJECT"
+set firewall.@zone[-1].network="voip"
+set firewall.@zone[-1].masq="1"
 
-		uci add firewall forwarding >> $debug 2>&1
-		uci set firewall.@forwarding[-1].src="lan" >> $debug 2>&1
-		uci set firewall.@forwarding[-1].dest="voip" >> $debug 2>&1
+add firewall forwarding
+set firewall.@forwarding[-1].src="lan"
+set firewall.@forwarding[-1].dest="voip"
+EOF
+	fi
+
+	# udpxy acces from WAN
+	if [ $udpxy_wan -eq 1 ]; then
+		uci batch >> $debug 2>&1 << EOF
+set firewall.udpxy=rule
+set firewall.udpxy.target="ACCEPT"
+set firewall.udpxy.src="wan"
+set firewall.udpxy.proto="tcp udp"
+set firewall.udpxy.dest_port="${udpxy_port}"
+set firewall.udpxy.name="udpxy"
+EOF
 	fi
 
 	# Save firewall config
-	set_firewall_extras
 	uci commit firewall >> $debug 2>&1
+	cat /etc/config/firewall >> $debug 2>&1
 	print "Firewall config saved"
 }
 mode_misc_cfg() {
@@ -784,34 +765,86 @@ mode_misc_cfg() {
 		# Use mcproxy over igmpproxy
 		if [ -f /usr/sbin/mcproxy ]; then
 			# Set mcproxy config
-			set_mcproxy "/etc/mcproxy.conf"
+			if [ -f /etc/config/mcproxy ]; then
+				rm -f /etc/config/mcproxy
+				touch /etc/config/mcproxy
+
+				uci batch >> $debug 2>&1 << EOF
+set mcproxy.mcproxy="mcproxy"
+set mcproxy.mcproxy.respawn="1"
+set mcproxy.mcproxy.protocol="IGMPv3"
+
+set mcproxy.iptv="instance"
+set mcproxy.iptv.name="iptv"
+add_list mcproxy.iptv.upstream="${switch_ifname_iptv}"
+add_list mcproxy.iptv.downstream="br-lan"
+
+commit mcproxy
+EOF
+			else
+				# Legacy mcproxy config
+				cat << EOF > /etc/mcproxy.conf
+######################################
+##-- mcproxy configuration script --##
+######################################
+
+# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)
+protocol IGMPv2;
+
+# Proxy Instance: upstream ==> downstream
+pinstance iptv: "${switch_ifname_iptv}" ==> "br-lan";
+
+EOF
+			fi
+
 			print "mcproxy config applied"
 			# Enable mcproxy
 			service_enable "mcproxy"
 		else
 			# Set igmpproxy config
-			set_igmpproxy "/etc/config/igmpproxy"
+			rm -f /etc/config/igmpproxy
+			touch /etc/config/igmpproxy
+
+			uci batch >> $debug 2>&1 << EOF
+add igmpproxy igmpproxy
+set igmpproxy.@igmpproxy[-1].quickleave="1" 
+
+add igmpproxy phyint
+set igmpproxy.@phyint[-1].network="iptv"
+set igmpproxy.@phyint[-1].direction="upstream"
+add_list igmpproxy.@phyint[-1].altnet="172.26.0.0/16"
+add_list igmpproxy.@phyint[-1].altnet="${lan_ipaddr}/${lan_cidr}"
+
+add igmpproxy phyint
+set igmpproxy.@phyint[-1].network="lan"
+set igmpproxy.@phyint[-1].direction="downstream"
+
+commit igmpproxy
+EOF
+
 			print "igmpproxy config applied"
 			# Enable igmpproxy
-			service_disable "igmpproxy"
-			igmpproxy_workaround_enable
-			print "igmpproxy workaround enabled"
+			service_enable "igmpproxy"
 		fi
 	else
+		# Disable mcproxy
+		service_disable "mcproxy"
 		# Disable igmpproxy
 		service_disable "igmpproxy"
-		igmpproxy_workaround_disable
-		print "igmpproxy workaround disabled"
 	fi
 
 	# DNS rebind protection
 	if [ $iptv_enabled -eq 1 ]; then
-		uci set dhcp.@dnsmasq[0].rebind_protection="0" >> $debug 2>&1
-		uci commit dhcp >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set dhcp.@dnsmasq[0].rebind_protection="0"
+commit dhcp
+EOF
 		print "DNS rebind protection disabled"
 	else
-		uci set dhcp.@dnsmasq[0].rebind_protection="1" >> $debug 2>&1
-		uci commit dhcp >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set dhcp.@dnsmasq[0].rebind_protection="1"
+commit dhcp
+EOF
 		print "DNS rebind protection enabled"
 	fi
 
@@ -820,39 +853,45 @@ mode_misc_cfg() {
 		rm -f /etc/config/udpxy >> $debug 2>&1
 		touch /etc/config/udpxy >> $debug 2>&1
 
-		uci set udpxy.iptv="udpxy" >> $debug 2>&1
-		uci set udpxy.iptv.disabled="0" >> $debug 2>&1
-		uci set udpxy.iptv.respawn="1" >> $debug 2>&1
-		uci set udpxy.iptv.verbose="0" >> $debug 2>&1
-		uci set udpxy.iptv.status="1" >> $debug 2>&1
-		uci set udpxy.iptv.port="$udpxy_port" >> $debug 2>&1
-		uci set udpxy.iptv.source="$switch_ifname_iptv" >> $debug 2>&1
-		uci commit udpxy >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set udpxy.iptv="udpxy"
+set udpxy.iptv.disabled="0"
+set udpxy.iptv.respawn="1"
+set udpxy.iptv.verbose="0"
+set udpxy.iptv.status="1"
+set udpxy.iptv.port="${udpxy_port}"
+set udpxy.iptv.source="${switch_ifname_iptv}"
+commit udpxy
+EOF
 		print "udpxy config applied"
+		# Enable udpxy
+		service_enable "udpxy"
 	fi
 
 	# DHCP
 	if [ $dhcptv_enabled -eq 1 ]; then
-		uci set dhcp.lan.networkid="tag:!dhcptv" >> $debug 2>&1
-		uci set dhcp.lan.start="100" >> $debug 2>&1
-		uci set dhcp.lan.limit="100" >> $debug 2>&1
+		uci batch >> $debug 2>&1 << EOF
+set dhcp.lan.networkid="tag:!dhcptv"
+set dhcp.lan.start="100"
+set dhcp.lan.limit="100"
 
-		uci delete dhcp.vendortv >> $debug 2>&1
-		uci set dhcp.vendortv=vendorclass >> $debug 2>&1
-		uci set dhcp.vendortv.vendorclass="IAL" >> $debug 2>&1
-		uci set dhcp.vendortv.networkid="dhcptv" >> $debug 2>&1
+delete dhcp.vendortv
+set dhcp.vendortv=vendorclass
+set dhcp.vendortv.vendorclass="IAL"
+set dhcp.vendortv.networkid="dhcptv"
 
-		uci delete dhcp.dhcptv >> $debug 2>&1
-		uci set dhcp.dhcptv=dhcp >> $debug 2>&1
-		uci set dhcp.dhcptv.networkid="tag:dhcptv" >> $debug 2>&1
-		uci set dhcp.dhcptv.interface="lan" >> $debug 2>&1
-		uci set dhcp.dhcptv.start="200" >> $debug 2>&1
-		uci set dhcp.dhcptv.limit="23" >> $debug 2>&1
-		uci set dhcp.dhcptv.leasetime="24h" >> $debug 2>&1
-		uci add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3" >> $debug 2>&1
-		uci add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222" >> $debug 2>&1
+delete dhcp.dhcptv
+set dhcp.dhcptv=dhcp
+set dhcp.dhcptv.networkid="tag:dhcptv"
+set dhcp.dhcptv.interface="lan"
+set dhcp.dhcptv.start="200"
+set dhcp.dhcptv.limit="23"
+set dhcp.dhcptv.leasetime="24h"
+add_list dhcp.dhcptv.dhcp_option="6,172.26.23.3"
+add_list dhcp.dhcptv.dhcp_option="240,:::::239.0.2.10:22222:v6.0:239.0.2.30:22222"
 
-		uci commit dhcp >> $debug 2>&1
+commit dhcp
+EOF
 		print "IPTV DHCP server config applied"
 	fi
 }
@@ -860,7 +899,7 @@ mode_misc_cfg() {
 # Main fun
 main() {
 	# Print CPU info
-	cat /proc/cpuinfo &> $debug
+	cat /proc/cpuinfo > $debug
 
 	# Print script info
 	print "Movistar Imagenio Configuration Script $version"
