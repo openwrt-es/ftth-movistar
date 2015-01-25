@@ -5,8 +5,9 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r15"
+version="r16"
 debug="/tmp/movistar.log"
+debug_persistent="/etc/movistar.log"
 
 # Vars
 switch_ifname_lan="eth0.1"
@@ -41,6 +42,7 @@ deco_ipaddr=""
 dhcptv_enabled=0
 udpxy_config=0
 udpxy_port=4022
+udpxy_wan=0
 
 # Common Functions
 log() {
@@ -154,30 +156,6 @@ netmask_cidr() {
 }
 
 # Funs
-router_detect() {
-	if [ -f "/tmp/sysinfo/board_name" ]; then
-		router=$(cat /tmp/sysinfo/board_name)
-	else
-		case $DISTRIB_TARGET in
-			"brcm63xx"*)
-				router=$(awk 'BEGIN{FS="[ \t:/]+"} /system type/ {print $4}' /proc/cpuinfo)
-				;;
-		esac
-	fi
-
-	case $router in
-		"96369R-1231N" |\
-		"archer-c5" |\
-		"archer-c7" |\
-		"tl-wdr4300" |\
-		"tl-wdr4900-v2" |\
-		"tl-wr1043nd" |\
-		"tl-wr1043nd-v2")
-			router_detected=1
-			print "Router identified: $router"
-			;;
-	esac
-}
 switch_detect() {
 	# Check if switch exists
 	switch_exists=0
@@ -290,6 +268,35 @@ switch_detect() {
 	fi
 	print "\tSwitch LAN Ports: $switch_port_lan"
 }
+router_detect() {
+	if [ -f "/tmp/sysinfo/board_name" ]; then
+		router=$(cat /tmp/sysinfo/board_name)
+	else
+		case $DISTRIB_TARGET in
+			"brcm63xx"*)
+				router=$(awk 'BEGIN{FS="[ \t:/]+"} /system type/ {print $4}' /proc/cpuinfo)
+				;;
+		esac
+	fi
+
+	case $router in
+		"96369R-1231N" |\
+		"archer-c5" |\
+		"archer-c7" |\
+		"tl-wdr4300" |\
+		"tl-wdr4900-v2" |\
+		"tl-wr1043nd" |\
+		"tl-wr1043nd-v2")
+			router_detected=1
+			print "Router identified: $router"
+			;;
+		*)
+			print "Router not supported."
+			print "You need to set the switch config manually."
+			switch_detect
+			;;
+	esac
+}
 enabled_configs_print() {
 	# Print configuration mode
 	local configs_enabled="WAN"
@@ -391,127 +398,175 @@ mode_ask() {
 			if [ $udpxy_config -eq 1 ]; then
 				print "Enter udpxy port (def $udpxy_port)"
 				udpxy_port=$(read_check_port)
+
+				print "Allow access to udpxy from WAN? (y/n)"
+				udpxy_wan=$(read_check_yesno)
 			fi
 		fi
 	fi
 }
+log_persistent() {
+	# Ask for Log persistance
+	print "Make log persistent? (y/n)"
+	log_persistent=$(read_check_yesno)
+
+	if [ $log_persistent -eq 1 ]; then
+		cp $debug $debug_persistent
+		print "Log copied from $debug to $debug_persistent"
+	fi
+}
 
 set_bird4() {
-	echo -e "log syslog all;" > $1
-	echo -e "" >> $1
-	echo -e "router id $lan_ipaddr;" >> $1
-	echo -e "" >> $1
-	echo -e "protocol kernel {" >> $1
-	echo -e "\tpersist;" >> $1
-	echo -e "\tscan time 20;" >> $1
-	echo -e "\timport all;" >> $1
-	echo -e "\texport all;" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
-	echo -e "protocol device {" >> $1
-	echo -e "\tscan time 10;" >> $1
-	echo -e "}" >> $1
-	echo -e "" >> $1
+	# General
+	cat << EOT > $1
+log syslog all;
+
+router id $lan_ipaddr;
+
+protocol kernel {
+	persist;
+	scan time 20;
+	import all;
+	export all;
+}
+
+protocol device {
+	scan time 10;
+}
+
+EOT
 
 	# Static
-	echo -e "protocol static {" >> $1
 	if [ $iptv_enabled -eq 1 ] && [ $iptv_has_alias -eq 0 ]; then
-		echo -e "\texport all;" >> $1
-		echo -e "\troute 172.26.0.0/16 via $iptv_gateway;" >> $1
+		cat << EOT >> $1
+protocol static {
+	export all;
+	route 172.26.0.0/16 via $iptv_gateway;
+}
+
+EOT
 	else
-		echo -e "\texport none;" >> $1
+		cat << EOT >> $1
+protocol static {
+	export none;
+}
+
+EOT
 	fi
-	echo -e "}" >> $1
-	echo -e "" >> $1
 
 	# VOIP RIPv2
 	if [ $voip_enabled -eq 1 ]; then
-		echo -e "filter voip_filter {" >> $1
-		echo -e "\tif net ~ 10.0.0.0/8 then accept;" >> $1
-		echo -e "\telse reject;" >> $1
-		echo -e "}" >> $1
-		echo -e "protocol rip voip {" >> $1
-		echo -e "\timport all;" >> $1
-		echo -e "\texport filter voip_filter;" >> $1
-		echo -e "\tinterface \"$switch_ifname_voip\";" >> $1
-		echo -e "}" >> $1
-		echo -e "" >> $1
+		cat << EOT >> $1
+filter voip_filter {
+	if net ~ 10.0.0.0/8 then accept;
+	else reject;
+}
+protocol rip voip {
+	import all;
+	export filter voip_filter;
+	interface "$switch_ifname_voip";
+}
+
+EOT
 	fi
 
 	# IPTV RIPv2
 	if [ $iptv_enabled -eq 1 ]; then
-		echo -e "filter iptv_filter {" >> $1
-		echo -e "\tif net ~ 172.26.0.0/16 then accept;" >> $1
-		echo -e "\telse reject;" >> $1
-		echo -e "}" >> $1
-		echo -e "protocol rip iptv {" >> $1
-		echo -e "\timport all;" >> $1
-		echo -e "\texport filter iptv_filter;" >> $1
-		echo -e "\tinterface \"$switch_ifname_iptv\";" >> $1
-		echo -e "}" >> $1
-		echo -e "" >> $1
+		cat << EOT >> $1
+filter iptv_filter {
+	if net ~ 172.26.0.0/16 then accept;
+	else reject;
+}
+protocol rip iptv {
+	import all;
+	export filter iptv_filter;
+	interface "$switch_ifname_iptv";
+}
+
+EOT
 	fi
 }
 set_igmpproxy() {
-	echo -e "config igmpproxy" > $1
-	echo -e "option quickleave 1" >> $1
-	echo -e "" >> $1
-	echo -e "config phyint" >> $1
-	echo -e "option network iptv" >> $1
-	echo -e "option direction upstream" >> $1
-	echo -e "list altnet 172.26.0.0/16" >> $1
-	echo -e "list altnet $lan_ipaddr/$lan_cidr" >> $1
-	echo -e "" >> $1
-	echo -e "config phyint" >> $1
-	echo -e "option network lan" >> $1
-	echo -e "option direction downstream" >> $1
-	echo -e "" >> $1
+	cat << EOT > $1
+config igmpproxy
+option quickleave 1
+
+config phyint
+option network iptv
+option direction upstream
+list altnet 172.26.0.0/16
+list altnet $lan_ipaddr/$lan_cidr
+
+config phyint
+option network lan
+option direction downstream
+
+EOT
 }
 set_mcproxy() {
-	echo -e "######################################" > $1
-	echo -e "##-- mcproxy configuration script --##" >> $1
-	echo -e "######################################" >> $1
-	echo -e "" >> $1
-	echo -e "# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)" >> $1
-	echo -e "protocol IGMPv2;" >> $1
-	echo -e "" >> $1
-	echo -e "# Proxy Instance: upstream ==> downstream" >> $1
-	echo -e "pinstance iptv: \"$switch_ifname_iptv\" ==> \"br-lan\";" >> $1
-	echo -e "" >> $1
+	cat << EOT > $1
+######################################
+##-- mcproxy configuration script --##
+######################################
+
+# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)
+protocol IGMPv2;
+
+# Proxy Instance: upstream ==> downstream
+pinstance iptv: "$switch_ifname_iptv" ==> "br-lan";
+
+EOT
 }
 set_firewall_user() {
-	echo -e "# This file is interpreted as shell script." > $1
-	echo -e "# Put your custom iptables rules here, they will" >> $1
-	echo -e "# be executed with each firewall (re-)start." >> $1
-	echo -e "" >> $1
-	echo -e "# Internal uci firewall chains are flushed and recreated on reload, so" >> $1
-	echo -e "# put custom rules into the root chains e.g. INPUT or FORWARD or into the" >> $1
-	echo -e "# special user chains, e.g. input_wan_rule or postrouting_lan_rule." >> $1
-	echo -e "" >> $1
+	cat << EOT > $1
+# This file is interpreted as shell script.
+# Put your custom iptables rules here, they will
+# be executed with each firewall (re-)start.
+
+# Internal uci firewall chains are flushed and recreated on reload, so
+# put custom rules into the root chains e.g. INPUT or FORWARD or into the
+# special user chains, e.g. input_wan_rule or postrouting_lan_rule.
+
+EOT
 }
 set_firewall_extras() {
-	if [ -f /rom/etc/uci-defaults/99-miniupnpd ]; then
-		sh /rom/etc/uci-defaults/99-miniupnpd
-	elif [ -f /etc/uci-defaults/99-miniupnpd ]; then
-		sh /etc/uci-defaults/99-miniupnpd
+	if [ -f /usr/share/miniupnpd/firewall.include ]; then
+		uci set firewall.miniupnpd=include
+		uci set firewall.miniupnpd.type="script"
+		uci set firewall.miniupnpd.path="/usr/share/miniupnpd/firewall.include"
+		uci set firewall.miniupnpd.family="any"
+		uci set firewall.miniupnpd.reload="1"
+	fi
+
+	if [ $udpxy_wan -eq 1 ]; then
+		uci set firewall.udpxy=rule
+		uci set firewall.udpxy.target="ACCEPT"
+		uci set firewall.udpxy.src="wan"
+		uci set firewall.udpxy.proto="tcp udp"
+		uci set firewall.udpxy.dest_port="$udpxy_port"
+		uci set firewall.udpxy.name="udpxy"
 	fi
 }
 
 igmpproxy_workaround_enable() {
-	echo -e "# Put your custom commands here that should be executed once" > /etc/rc.local
-	echo -e "# the system init finished. By default this file does nothing." >> /etc/rc.local
-	echo -e "" >> /etc/rc.local
-	echo -e "sleep 5 && /etc/init.d/igmpproxy start &" >> /etc/rc.local
-	echo -e "" >> /etc/rc.local
-	echo -e "exit 0" >> /etc/rc.local
-	echo -e "" >> /etc/rc.local
+	cat << EOT > /etc/rc.local
+# Put your custom commands here that should be executed once
+# the system init finished. By default this file does nothing.
+
+sleep 5 && /etc/init.d/igmpproxy start &
+
+exit 0
+
+EOT
 }
 igmpproxy_workaround_disable() {
-	echo -e "# Put your custom commands here that should be executed once" > /etc/rc.local
-	echo -e "# the system init finished. By default this file does nothing." >> /etc/rc.local
-	echo -e "" >> /etc/rc.local
-	echo -e "exit 0" >> /etc/rc.local
-	echo -e "" >> /etc/rc.local
+	cat << EOT > /etc/rc.local
+# Put your custom commands here that should be executed once
+# the system init finished. By default this file does nothing.
+
+exit 0
+
+EOT
 }
 
 mode_network_cfg() {
@@ -659,7 +714,6 @@ mode_firewall_cfg() {
 	rm -f /etc/config/firewall >> $debug 2>&1
 	cp /rom/etc/config/firewall /etc/config >> $debug 2>&1
 	set_firewall_user "/etc/firewall.user"
-	set_firewall_extras
 
 	# IPTV Firewall
 	if [ $iptv_enabled -eq 1 ]; then
@@ -703,6 +757,7 @@ mode_firewall_cfg() {
 	fi
 
 	# Save firewall config
+	set_firewall_extras
 	uci commit firewall >> $debug 2>&1
 	print "Firewall config saved"
 }
@@ -816,10 +871,6 @@ main() {
 
 	# Detect router
 	router_detect
-	if [ $router_detected -eq 0 ]; then
-		# Detect switch
-		switch_detect
-	fi
 
 	space
 
@@ -846,6 +897,9 @@ main() {
 
 	# End
 	print "Configuration done!"
+
+	# Log persistent
+	log_persistent
 }
 
 # Execute main
