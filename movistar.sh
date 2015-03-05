@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r17"
+version="r18"
 debug="/tmp/movistar.log"
 debug_persistent="/etc/movistar.log"
 
@@ -278,16 +278,39 @@ router_detect() {
 		esac
 	fi
 
+	local router_name=""
 	case $router in
-		"96369R-1231N" |\
-		"archer-c5" |\
-		"archer-c7" |\
-		"tl-wdr4300" |\
-		"tl-wdr4900-v2" |\
-		"tl-wr1043nd" |\
+		"96369R-1231N")
+			router_detected=1
+			router_name="Comtrend WAP-5813n"
+			;;
+		"archer-c5")
+			router_detected=1
+			router_name="TP-Link Archer C5"
+			;;
+		"archer-c7")
+			router_detected=1
+			router_name="TP-Link Archer C7"
+			;;
+		"armada-xp-mamba")
+			router_detected=1
+			router_name="Linksys WRT1900AC"
+			;;
+		"tl-wdr4300")
+			router_detected=1
+			router_name="TP-Link WDR3500/3600/4300/4310"
+			;;
+		"tl-wdr4900-v2")
+			router_detected=1
+			router_name="TP-Link WDR4900 v2"
+			;;
+		"tl-wr1043nd")
+			router_detected=1
+			router_name="TP-Link WR1043ND"
+			;;
 		"tl-wr1043nd-v2")
 			router_detected=1
-			print "Router identified: $router"
+			router_name="TP-Link WR1043ND v2"
 			;;
 		*)
 			print "Router not supported."
@@ -295,6 +318,10 @@ router_detect() {
 			switch_detect
 			;;
 	esac
+
+	if [ $router_detected -eq 1 ]; then
+		print "Router identified: $router_name ($router)"
+	fi
 }
 enabled_configs_print() {
 	# Print configuration mode
@@ -512,6 +539,17 @@ mode_network_cfg() {
 				fi
 				ucidef_add_switch_vlan "switch0" "6" "1t 6t" >> $debug 2>&1
 				;;
+			"armada-xp-mamba")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 5t" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "4t 5t" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "4t 5t" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "4t 5t" >> $debug 2>&1
+				;;
 			"tl-wdr4300")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
 				ucidef_add_switch_vlan "switch0" "1" "0t 2 3 4 5" >> $debug 2>&1
@@ -536,8 +574,7 @@ mode_network_cfg() {
 				;;
 			"tl-wr1043nd-v2")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
-				switch_ifname_lan="eth1"
-				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 4" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "1 2 3 4 6t" >> $debug 2>&1
 				if [ $iptv_enabled -eq 1 ]; then
 					ucidef_add_switch_vlan "switch0" "2" "5t 6t" >> $debug 2>&1
 				fi
@@ -772,7 +809,7 @@ mode_misc_cfg() {
 				uci batch >> $debug 2>&1 << EOF
 set mcproxy.mcproxy="mcproxy"
 set mcproxy.mcproxy.respawn="1"
-set mcproxy.mcproxy.protocol="IGMPv3"
+set mcproxy.mcproxy.protocol="IGMPv2"
 
 set mcproxy.iptv="instance"
 set mcproxy.iptv.name="iptv"
@@ -784,14 +821,8 @@ EOF
 			else
 				# Legacy mcproxy config
 				cat << EOF > /etc/mcproxy.conf
-######################################
-##-- mcproxy configuration script --##
-######################################
-
-# Protocol: IGMPv1|IGMPv2|IGMPv3 (IPv4) - MLDv1|MLDv2 (IPv6)
 protocol IGMPv2;
 
-# Proxy Instance: upstream ==> downstream
 pinstance iptv: "${switch_ifname_iptv}" ==> "br-lan";
 
 EOF
@@ -902,7 +933,7 @@ main() {
 	cat /proc/cpuinfo > $debug
 
 	# Print script info
-	print "Movistar Imagenio Configuration Script $version"
+	print "Movistar FTTH Configuration Script $version"
 	print "$DISTRIB_DESCRIPTION ($DISTRIB_TARGET)"
 	print "Alvaro Fernandez Rojas (noltari@gmail.com)"
 
