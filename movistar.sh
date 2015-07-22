@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r18"
+version="r19"
 debug="/tmp/movistar.log"
 debug_persistent="/etc/movistar.log"
 
@@ -272,6 +272,9 @@ router_detect() {
 		router=$(cat /tmp/sysinfo/board_name)
 	else
 		case $DISTRIB_TARGET in
+			"bcm53xx"*)
+				router=$(cat /proc/device-tree/compatible | tr '\0' '\t' | cut -f 1)
+				;;
 			"brcm63xx"*)
 				router=$(awk 'BEGIN{FS="[ \t:/]+"} /system type/ {print $4}' /proc/cpuinfo)
 				;;
@@ -281,36 +284,52 @@ router_detect() {
 	local router_name=""
 	case $router in
 		"96369R-1231N")
-			router_detected=1
 			router_name="Comtrend WAP-5813n"
 			;;
 		"archer-c5")
-			router_detected=1
 			router_name="TP-Link Archer C5"
 			;;
 		"archer-c7")
-			router_detected=1
 			router_name="TP-Link Archer C7"
 			;;
-		"armada-xp-mamba")
-			router_detected=1
+		"armada-385-linksys-caiman")
+			router_name="Linksys WRT1200AC"
+			;;
+		"armada-385-linksys-cobra")
+			router_name="Linksys WRT1900AC v2"
+			;;
+		"armada-xp-linksys-mamba")
 			router_name="Linksys WRT1900AC"
 			;;
+		"asus,rt-ac87u")
+			router_name="ASUS RT-AC87U"
+			;;
+		"mynet-n750")
+			router_name="Western Digital My Net N750"
+			;;
+		"rb-951ui-2hnd")
+			router_name="Mikrotik RouterBoard RB951Ui-2HnD"
+			;;
 		"tl-wdr4300")
-			router_detected=1
 			router_name="TP-Link WDR3500/3600/4300/4310"
 			;;
 		"tl-wdr4900-v2")
-			router_detected=1
 			router_name="TP-Link WDR4900 v2"
 			;;
+		"tl-wr841n-v1")
+			router_name="TP-Link WR841ND"
+			;;
+		"tl-wr941nd")
+			router_name="TP-Link WR941ND"
+			;;
 		"tl-wr1043nd")
-			router_detected=1
 			router_name="TP-Link WR1043ND"
 			;;
 		"tl-wr1043nd-v2")
-			router_detected=1
 			router_name="TP-Link WR1043ND v2"
+			;;
+		"wrt160nl")
+			router_name="TP-Link WRT160NL"
 			;;
 		*)
 			print "Router not supported."
@@ -319,7 +338,8 @@ router_detect() {
 			;;
 	esac
 
-	if [ $router_detected -eq 1 ]; then
+	if [ ${#router_name} -gt 0 ]; then
+		router_detected=1
 		print "Router identified: $router_name ($router)"
 	fi
 }
@@ -337,13 +357,13 @@ enabled_configs_print() {
 lan_ask() {
 	# Ask for lan ip/netmask
 	print "Customize LAN Network? (def 192.168.1.1/24) (y/n)"
-	lan_custom=$(read_check_yesno)
+	local lan_custom=$(read_check_yesno)
 	if [ $lan_custom -eq 1 ]; then
 		print "LAN IP Address (e.g 192.168.1.1)"
-		lan_ipaddr=$(echo $(read_check_ip))
+		lan_ipaddr=$(read_check_ip)
 
 		print "LAN Netmask (e.g 255.255.255.0)"
-		lan_netmask=$(echo $(read_check_ip))
+		lan_netmask=$(read_check_ip)
 		lan_cidr=$(netmask_cidr $lan_netmask)
 	fi
 }
@@ -401,7 +421,8 @@ mode_ask() {
 			tvlan_netmask=$(read_check_ip)
 			tvlan_cidr=$(netmask_cidr $tvlan_netmask)
 		else
-			if [ -f /lib/modules/*/nf_nat_rtsp.ko ] && [ -f /lib/modules/*/nf_conntrack_rtsp.ko ]; then
+			local linux_version=$(uname -r)
+			if [ -f /lib/modules/${linux_version}/nf_nat_rtsp.ko ] && [ -f /lib/modules/${linux_version}/nf_conntrack_rtsp.ko ]; then
 				print "nf_conntrack_rtsp module detected"
 			else
 				print "Please install nf_conntrack_rtsp module IPTV decoders (VOD)"
@@ -479,7 +500,7 @@ EOF
 	if [ $iptv_enabled -eq 1 ]; then
 		cat << EOF >> $1
 filter iptv_filter {
-	if net ~ 172.26.0.0/16 then accept;
+	if net ~ 172.16.0.0/12 then accept;
 	else reject;
 }
 protocol rip iptv {
@@ -513,9 +534,14 @@ mode_network_cfg() {
 	uci set network.globals.ula_prefix="$ula_prefix" >> $debug 2>&1
 
 	# Switch config
+	local soft_vlans=0
+	local wan_mac=""
 	if [ $router_detected -eq 1 ]; then
 		case $router in
-			"96369R-1231N")
+			"96369R-1231N" |\
+			"armada-385-linksys-caiman" |\
+			"armada-385-linksys-cobra" |\
+			"armada-xp-linksys-mamba")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
 				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 5t" >> $debug 2>&1
 				if [ $iptv_enabled -eq 1 ]; then
@@ -539,16 +565,37 @@ mode_network_cfg() {
 				fi
 				ucidef_add_switch_vlan "switch0" "6" "1t 6t" >> $debug 2>&1
 				;;
-			"armada-xp-mamba")
+			"asus,rt-ac87u")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
-				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 5t" >> $debug 2>&1
+				switch_ifname_lan="eth1.1"
+				ucidef_add_switch_vlan "switch0" "1" "1 2 3 5 7t" >> $debug 2>&1
 				if [ $iptv_enabled -eq 1 ]; then
-					ucidef_add_switch_vlan "switch0" "2" "4t 5t" >> $debug 2>&1
+					switch_ifname_iptv="eth1.2"
+					ucidef_add_switch_vlan "switch0" "2" "0t 7t" >> $debug 2>&1
 				fi
 				if [ $voip_enabled -eq 1 ]; then
-					ucidef_add_switch_vlan "switch0" "3" "4t 5t" >> $debug 2>&1
+					switch_ifname_voip="eth1.3"
+					ucidef_add_switch_vlan "switch0" "3" "0t 7t" >> $debug 2>&1
 				fi
-				ucidef_add_switch_vlan "switch0" "6" "4t 5t" >> $debug 2>&1
+				switch_ifname_wan="eth1.6"
+				ucidef_add_switch_vlan "switch0" "6" "0t 7t" >> $debug 2>&1
+				;;
+			"mynet-n750")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0t 1 2 3 4" >> $debug 2>&1
+				if [ $iptv_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "2" "0t 5t" >> $debug 2>&1
+				fi
+				if [ $voip_enabled -eq 1 ]; then
+					ucidef_add_switch_vlan "switch0" "3" "0t 5t" >> $debug 2>&1
+				fi
+				ucidef_add_switch_vlan "switch0" "6" "0t 5t" >> $debug 2>&1
+				wan_mac=$(mtd_get_mac_ascii devdata "wanmac")
+				;;
+			"rb-951ui-2hnd")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 4" >> $debug 2>&1
+				switch_ifname_lan="eth1"
 				;;
 			"tl-wdr4300")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
@@ -583,6 +630,18 @@ mode_network_cfg() {
 				fi
 				ucidef_add_switch_vlan "switch0" "6" "5t 6t" >> $debug 2>&1
 				;;
+			"tl-wr841n-v1" |\
+			"tl-wr941nd")
+				switch_ifname_lan="lan1 lan2 lan3 lan4"
+				soft_vlans=1
+				;;
+			"wrt160nl")
+				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
+				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 4t" >> $debug 2>&1
+				switch_ifname_iptv="eth1.2"
+				switch_ifname_voip="eth1.3"
+				switch_ifname_wan="eth1.6"
+				;;
 		esac
 	else
 		ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
@@ -596,6 +655,34 @@ mode_network_cfg() {
 			fi
 			ucidef_add_switch_vlan "switch0" "6" "${switch_port_wan}t ${switch_port_cpu}t" >> $debug 2>&1
 		fi
+	fi
+
+	# Software VLANs
+	if [ $soft_vlans -eq 1 ]; then
+		local switch_vconfig=""
+		local switch_ifconfig=""
+
+		if [ $iptv_enabled -eq 1 ]; then
+			switch_ifname_iptv="wan.2"
+			switch_vconfig="vconfig add wan 2\n"
+			switch_ifconfig="ifconfig wan.2 up\n"
+		fi
+		if [ $voip_enabled -eq 1 ]; then
+			switch_ifname_voip="wan.3"
+			switch_vconfig="${switch_vconfig}vconfig add wan 3\n"
+			switch_ifconfig="${switch_ifconfig}ifconfig wan.3 up\n"
+		fi
+		switch_ifname_wan="wan.6"
+		switch_vconfig="${switch_vconfig}vconfig add wan 6\n"
+		switch_ifconfig="${switch_ifconfig}ifconfig wan.6 up\n"
+
+		cat << EOF > /etc/rc.local
+${switch_vconfig}
+${switch_ifconfig}
+
+exit 0
+
+EOF
 	fi
 
 	# LAN
@@ -635,6 +722,15 @@ set network.iptv.gateway="${iptv_gateway}"
 set network.iptv.defaultroute="0"
 set network.iptv.peerdns="0"
 EOF
+
+		# IPTV route
+		uci batch >> $debug 2>&1 << EOF
+add network route
+set network.@route[-1].interface="iptv" 
+set network.@route[-1].target="172.16.0.0"
+set network.@route[-1].netmask="255.240.0.0"
+set network.@route[-1].gateway="${iptv_gateway}"
+EOF
 	fi
 
 	# VOIP
@@ -656,21 +752,16 @@ set network.wan.proto="pppoe"
 set network.wan.username="adslppp@telefonicanetpa"
 set network.wan.password="adslppp"
 set network.wan.ipv6="1"
+set network.wan.mtu="1492"
 
 set network.wan6="interface"
 set network.wan6.ifname="wan"
 set network.wan6.proto="dhcpv6"
 EOF
 
-	# IPTV route
-	if [ $iptv_enabled -eq 1 ]; then
-		uci batch >> $debug 2>&1 << EOF
-add network route
-set network.@route[-1].interface="iptv" 
-set network.@route[-1].target="172.26.0.0"
-set network.@route[-1].netmask="255.255.0.0"
-set network.@route[-1].gateway="${iptv_gateway}"
-EOF
+	# WAN MAC address
+	if [ -n $wan_mac ]; then
+		ucidef_set_interface_macaddr "wan" "$wan_mac"
 	fi
 
 	# Load network config
@@ -728,6 +819,7 @@ set firewall.@zone[-1].input="ACCEPT"
 set firewall.@zone[-1].output="ACCEPT"
 set firewall.@zone[-1].forward="REJECT"
 set firewall.@zone[-1].network="iptv"
+set firewall.@zone[-1].mtu_fix="1"
 EOF
 
 		if [ $iptv_has_alias -eq 0 ]; then
@@ -755,6 +847,7 @@ set firewall.@zone[-1].output="ACCEPT"
 set firewall.@zone[-1].forward="REJECT"
 set firewall.@zone[-1].network="voip"
 set firewall.@zone[-1].masq="1"
+set firewall.@zone[-1].mtu_fix="1"
 
 add firewall forwarding
 set firewall.@forwarding[-1].src="lan"
@@ -831,7 +924,7 @@ EOF
 			print "mcproxy config applied"
 			# Enable mcproxy
 			service_enable "mcproxy"
-		else
+		elif [ -f /etc/config/igmpproxy ]; then
 			# Set igmpproxy config
 			rm -f /etc/config/igmpproxy
 			touch /etc/config/igmpproxy
@@ -843,7 +936,7 @@ set igmpproxy.@igmpproxy[-1].quickleave="1"
 add igmpproxy phyint
 set igmpproxy.@phyint[-1].network="iptv"
 set igmpproxy.@phyint[-1].direction="upstream"
-add_list igmpproxy.@phyint[-1].altnet="172.26.0.0/16"
+add_list igmpproxy.@phyint[-1].altnet="172.16.0.0/12"
 add_list igmpproxy.@phyint[-1].altnet="${lan_ipaddr}/${lan_cidr}"
 
 add igmpproxy phyint
@@ -856,6 +949,9 @@ EOF
 			print "igmpproxy config applied"
 			# Enable igmpproxy
 			service_enable "igmpproxy"
+		else
+			# igmpproxy/mcproxy not detected
+			error "No multicast proxy detected"
 		fi
 	else
 		# Disable mcproxy
