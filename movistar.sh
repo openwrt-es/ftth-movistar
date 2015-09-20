@@ -5,7 +5,7 @@
 . /lib/functions/uci-defaults.sh
 
 # Config
-version="r19"
+version="r20"
 debug="/tmp/movistar.log"
 debug_persistent="/etc/movistar.log"
 
@@ -277,15 +277,17 @@ router_detect() {
 				;;
 			"brcm63xx"*)
 				router=$(awk 'BEGIN{FS="[ \t:/]+"} /system type/ {print $4}' /proc/cpuinfo)
+				case $router in
+					"96369R-1231N")
+						router="wap-5813n"
+						;;
+				esac
 				;;
 		esac
 	fi
 
 	local router_name=""
 	case $router in
-		"96369R-1231N")
-			router_name="Comtrend WAP-5813n"
-			;;
 		"archer-c5")
 			router_name="TP-Link Archer C5"
 			;;
@@ -327,6 +329,9 @@ router_detect() {
 			;;
 		"tl-wr1043nd-v2")
 			router_name="TP-Link WR1043ND v2"
+			;;
+		"wap-5813n")
+			router_name="Comtrend WAP-5813n"
 			;;
 		"wrt160nl")
 			router_name="TP-Link WRT160NL"
@@ -538,10 +543,10 @@ mode_network_cfg() {
 	local wan_mac=""
 	if [ $router_detected -eq 1 ]; then
 		case $router in
-			"96369R-1231N" |\
 			"armada-385-linksys-caiman" |\
 			"armada-385-linksys-cobra" |\
-			"armada-xp-linksys-mamba")
+			"armada-xp-linksys-mamba" |\
+			"wap-5813n")
 				ucidef_add_switch "switch0" "1" "1" >> $debug 2>&1
 				ucidef_add_switch_vlan "switch0" "1" "0 1 2 3 5t" >> $debug 2>&1
 				if [ $iptv_enabled -eq 1 ]; then
@@ -924,6 +929,23 @@ EOF
 			print "mcproxy config applied"
 			# Enable mcproxy
 			service_enable "mcproxy"
+		elif [ -f /etc/config/omcproxy ]; then
+			# Set omcproxy config
+			rm -f /etc/config/omcproxy
+			touch /etc/config/omcproxy
+
+			uci batch >> $debug 2>&1 << EOF
+set omcproxy.iptv="proxy"
+set omcproxy.iptv.scope="global"
+set omcproxy.iptv.uplink="iptv"
+add_list omcproxy.iptv.downlink="lan"
+
+commit omcproxy
+EOF
+
+			print "omcproxy config applied"
+			# Enable omcproxy
+			service_enable "omcproxy"
 		elif [ -f /etc/config/igmpproxy ]; then
 			# Set igmpproxy config
 			rm -f /etc/config/igmpproxy
@@ -931,7 +953,7 @@ EOF
 
 			uci batch >> $debug 2>&1 << EOF
 add igmpproxy igmpproxy
-set igmpproxy.@igmpproxy[-1].quickleave="1" 
+set igmpproxy.@igmpproxy[-1].quickleave="1"
 
 add igmpproxy phyint
 set igmpproxy.@phyint[-1].network="iptv"
@@ -950,7 +972,7 @@ EOF
 			# Enable igmpproxy
 			service_enable "igmpproxy"
 		else
-			# igmpproxy/mcproxy not detected
+			# mcproxy/omcproxy/igmpproxy not detected
 			error "No multicast proxy detected"
 		fi
 	else
